@@ -296,7 +296,8 @@ server.tool(
 // ─── HTTP / SSE Express Server ─────────────────────────────────────────────────
 
 const app = express();
-app.use(express.json());
+// NOTE: do NOT use express.json() globally — it consumes the body stream
+// before SSEServerTransport.handlePostMessage can read it.
 
 // Health check (unauthenticated — useful for Tailscale uptime monitoring)
 app.get('/health', (_req, res) => {
