@@ -1,5 +1,17 @@
 import 'dotenv/config';
 import express from 'express';
+
+// ─── Crash Protection ────────────────────────────────────────────────────────
+// Prevent the process from dying on unhandled errors
+
+process.on('uncaughtException', (err) => {
+  console.error(`[crash-guard] Uncaught exception: ${err.message}`);
+  console.error(err.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(`[crash-guard] Unhandled rejection:`, reason);
+});
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
@@ -403,7 +415,14 @@ app.post('/messages', authMiddleware, async (req, res) => {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-  await transport.handlePostMessage(req, res);
+  try {
+    await transport.handlePostMessage(req, res);
+  } catch (err) {
+    console.error(`[messages] Error handling message for session ${sessionId}:`, (err as Error).message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
