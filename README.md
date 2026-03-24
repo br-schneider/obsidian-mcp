@@ -1,67 +1,100 @@
 # obsidian-mcp
 
-Self-contained MCP (Model Context Protocol) server for your Obsidian vault. Runs as a standalone Node.js process — no Obsidian plugins required. Access your vault remotely via Tailscale or any network.
+MCP server that gives AI agents full access to your Obsidian vault. Runs as a standalone Node.js process on the same machine as your vault — no Obsidian plugins required, no Obsidian needing to be open.
+
+## How it works
+
+obsidian-mcp reads and writes your vault's markdown files directly on disk. It exposes them over HTTP/SSE using the [Model Context Protocol](https://modelcontextprotocol.io), so any MCP-compatible client (Claude, OpenClaw, Cursor, etc.) can search, read, write, and manage your notes.
+
+**This must run on the machine where your vault lives.** For remote access, use Tailscale or another VPN — see [SETUP.md](./SETUP.md).
 
 ```
-Claude / AI Agent → Tailscale → Mac:3456 → obsidian-mcp → ~/YourVault/
+AI Agent → (network) → obsidian-mcp:3456 → ~/YourVault/
 ```
-
-## Features
-
-- **Full vault CRUD** — list, read, write, append, delete notes
-- **Full-text search** across your entire vault
-- **Tag management** — list all tags and their associated notes
-- **Daily notes** — get or create daily notes with templates
-- **Sync status** — detect Obsidian Sync conflicts and recent changes
-- **Secure** — optional bearer token auth, path traversal protection
-- **HTTP/SSE transport** — works with any MCP-compatible client
 
 ## Quick Start
 
 ```bash
+git clone https://github.com/meimakes/obsidian-mcp.git
+cd obsidian-mcp
 npm install
 npm run build
-
-# Configure
-cp .env.example .env
-# Edit .env with your vault path
-
-npm start
-# → http://localhost:3456/health
 ```
 
-## Configuration
+Configure:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your vault path:
 
 ```env
 VAULT_PATH=/Users/yourname/Documents/MyVault
 PORT=3456
-DAILY_NOTE_FOLDER=Journal
-AUTH_TOKEN=              # optional
+DAILY_NOTE_FOLDER=Journal    # where your daily notes live
+AUTH_TOKEN=                  # optional bearer token
 ```
 
-## Available Tools
+Run:
 
-| Tool | Description |
+```bash
+npm start
+```
+
+Verify:
+
+```bash
+curl http://localhost:3456/health
+# → {"status":"ok","vault":"/Users/yourname/Documents/MyVault","server":"obsidian-mcp"}
+```
+
+## Connect to your AI
+
+Point your MCP client to:
+
+```
+http://localhost:3456/sse
+```
+
+For remote access (e.g. from a VPS or phone), set up Tailscale and use your machine's Tailscale hostname instead of localhost. See [SETUP.md](./SETUP.md) for details.
+
+## Tools (10)
+
+| Tool | What it does |
 |------|-------------|
-| `list_notes` | List all notes (optional folder filter) |
-| `read_note` | Read note content + frontmatter |
-| `write_note` | Create or overwrite a note |
-| `append_note` | Append to an existing note |
+| `list_notes` | List all markdown files, optionally filtered by folder |
+| `read_note` | Read a note's content and frontmatter |
+| `write_note` | Create or overwrite a note (creates folders as needed) |
+| `append_note` | Append text to an existing note |
 | `delete_note` | Permanently delete a note |
-| `search_vault` | Full-text search across vault |
-| `list_tags` | All tags + which notes use them |
-| `get_daily_note` | Today's (or specific date's) daily note |
-| `create_daily_note` | Create daily note from template |
-| `get_sync_status` | Conflict files, recent changes, sync log |
+| `search_vault` | Full-text search across all notes |
+| `list_tags` | List all tags and which notes use them |
+| `get_daily_note` | Get today's or a specific date's daily note |
+| `create_daily_note` | Create a daily note from a template |
+| `get_sync_status` | Check for sync conflicts, recently modified files |
 
-## Running Persistently
+## Requirements
 
-See [SETUP.md](./SETUP.md) for detailed instructions on:
-- Tailscale remote access setup
-- pm2 process management
-- Launch daemon configuration
-- MCP client connection
+- Node.js 20+
+- An Obsidian vault (just a folder of markdown files)
+- Obsidian does NOT need to be running
+
+## Running persistently
+
+See [SETUP.md](./SETUP.md) for:
+
+- pm2 process management (survives reboots)
+- macOS LaunchAgent setup
+- Tailscale remote access
+- Auth token configuration
+
+## Security
+
+- **Path traversal protection** — all file operations are sandboxed to your vault directory
+- **Optional bearer token auth** — set `AUTH_TOKEN` in `.env`
+- **No data leaves your machine** — everything runs locally
 
 ## License
 
-MIT — see [LICENSE](./LICENSE)
+MIT
