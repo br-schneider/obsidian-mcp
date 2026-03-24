@@ -57,7 +57,18 @@ Point your MCP client to:
 http://localhost:3456/sse
 ```
 
-For remote access (e.g. from a VPS or phone), set up Tailscale and use your machine's Tailscale hostname instead of localhost. See [SETUP.md](./SETUP.md) for details.
+For remote access (e.g. from a VPS or phone), use ngrok or Tailscale:
+
+```bash
+# Quick: ngrok (public URL, use AUTH_TOKEN)
+ngrok http 3456
+# → https://abc123.ngrok-free.app/sse
+
+# Private: Tailscale (no auth token needed)
+# → http://your-mac.tailnet.ts.net:3456/sse
+```
+
+See [SETUP.md](./SETUP.md) for full remote access setup.
 
 ## Tools (10)
 

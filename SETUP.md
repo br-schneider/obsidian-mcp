@@ -48,7 +48,31 @@ npm start
 
 ---
 
-## 3. Tailscale Setup
+## 3. Remote Access
+
+You need remote access if your AI agent runs on a different machine than your vault (e.g. a VPS, cloud IDE, or phone). Two options:
+
+### Option A: ngrok (fastest setup)
+
+```bash
+# Install
+brew install ngrok
+
+# Expose your server
+ngrok http 3456
+```
+
+ngrok gives you a public URL like `https://abc123.ngrok-free.app`. Your MCP client connects to:
+
+```
+https://abc123.ngrok-free.app/sse
+```
+
+**Important:** Set `AUTH_TOKEN` in your `.env` when using ngrok — without it, anyone with the URL can read/write your vault.
+
+For a stable URL (survives restarts), use a paid ngrok plan with a custom domain, or use Tailscale instead.
+
+### Option B: Tailscale (private network, no auth token needed)
 
 ### Install Tailscale as a system service (not the GUI app)
 
