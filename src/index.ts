@@ -9,8 +9,10 @@ import { ObsidianVault } from './vault.js';
 
 const VAULT_PATH = process.env.VAULT_PATH;
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
+const BIND_ADDRESS = process.env.BIND_ADDRESS ?? '127.0.0.1'; // #7: default to loopback
 const DAILY_NOTE_FOLDER = process.env.DAILY_NOTE_FOLDER ?? 'Journal';
 const AUTH_TOKEN = process.env.AUTH_TOKEN; // optional bearer token
+const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? '1mb'; // #6: request size limit
 
 if (!VAULT_PATH) {
   console.error('❌  VAULT_PATH env var is required');
@@ -36,11 +38,58 @@ function authMiddleware(
   res: express.Response,
   next: express.NextFunction
 ) {
-  if (!AUTH_TOKEN) return next(); // no auth configured → open (rely on Tailscale ACLs)
+  if (!AUTH_TOKEN) return next(); // no auth configured → open (rely on network-level security)
   const header = req.headers.authorization ?? '';
   if (header === `Bearer ${AUTH_TOKEN}`) return next();
   res.status(401).json({ error: 'Unauthorized' });
 }
+
+// ─── Audit Logger ─────────────────────────────────────────────────────────────
+// #8: Log all write/delete operations
+
+function auditLog(action: string, path: string, ip?: string) {
+  const ts = new Date().toISOString();
+  const src = ip ? ` from ${ip}` : '';
+  console.log(`[audit] ${ts} ${action}: ${path}${src}`);
+}
+
+// ─── Rate Limiter ─────────────────────────────────────────────────────────────
+// #3: Simple per-IP rate limiting
+
+const rateLimitWindow = 60_000; // 1 minute
+const rateLimitMax = 100; // max requests per window
+const requestCounts = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimitMiddleware(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const ip = req.ip ?? 'unknown';
+  const now = Date.now();
+  let entry = requestCounts.get(ip);
+
+  if (!entry || now > entry.resetAt) {
+    entry = { count: 0, resetAt: now + rateLimitWindow };
+    requestCounts.set(ip, entry);
+  }
+
+  entry.count++;
+  if (entry.count > rateLimitMax) {
+    res.status(429).json({ error: 'Too many requests. Try again later.' });
+    return;
+  }
+
+  next();
+}
+
+// Clean up stale rate limit entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of requestCounts) {
+    if (now > entry.resetAt) requestCounts.delete(ip);
+  }
+}, 60_000);
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -80,9 +129,10 @@ server.tool(
 );
 
 // ── write_note ────────────────────────────────────────────────────────────────
+// #2: Requires overwrite flag for existing notes
 server.tool(
   'write_note',
-  'Create or overwrite a note. Creates parent folders as needed.',
+  'Create or update a note. Set overwrite: true to replace an existing note (a backup is created automatically).',
   {
     path: z.string().describe('Path relative to vault root'),
     content: z.string().describe('Markdown content (excluding frontmatter)'),
@@ -90,18 +140,27 @@ server.tool(
       .record(z.unknown())
       .optional()
       .describe('Optional YAML frontmatter as a JSON object'),
+    overwrite: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Must be true to overwrite an existing note. A .bak backup is created automatically.'),
   },
-  async ({ path, content, frontmatter }) => {
+  async ({ path, content, frontmatter, overwrite }, extra) => {
     const result = await vault.writeNote(
       path,
       content,
-      frontmatter as Record<string, unknown> | undefined
+      frontmatter as Record<string, unknown> | undefined,
+      { overwrite }
     );
+    auditLog(result.created ? 'CREATE' : 'UPDATE', path, extra.sessionId);
     return {
       content: [
         {
           type: 'text',
-          text: result.created ? `✅ Created: ${result.path}` : `✅ Updated: ${result.path}`,
+          text: result.created
+            ? `✅ Created: ${result.path}`
+            : `✅ Updated: ${result.path}` + (result.backedUp ? ` (backup: ${result.backupPath})` : ''),
         },
       ],
     };
@@ -116,8 +175,9 @@ server.tool(
     path: z.string().describe('Path relative to vault root'),
     content: z.string().describe('Text to append'),
   },
-  async ({ path, content }) => {
+  async ({ path, content }, extra) => {
     await vault.appendNote(path, content);
+    auditLog('APPEND', path, extra.sessionId);
     return {
       content: [{ type: 'text', text: `✅ Appended to ${path}` }],
     };
@@ -125,14 +185,24 @@ server.tool(
 );
 
 // ── delete_note ───────────────────────────────────────────────────────────────
+// #1: Soft-delete to .trash/ instead of hard unlink
 server.tool(
   'delete_note',
-  'Permanently delete a note from the vault',
-  { path: z.string().describe('Path relative to vault root') },
-  async ({ path }) => {
-    await vault.deleteNote(path);
+  'Move a note to .trash/ (soft delete, recoverable). Use permanent: true to hard-delete.',
+  {
+    path: z.string().describe('Path relative to vault root'),
+    permanent: z.boolean().optional().default(false).describe('If true, permanently deletes instead of moving to .trash/'),
+  },
+  async ({ path, permanent }, extra) => {
+    const result = await vault.deleteNote(path, { permanent });
+    auditLog(permanent ? 'DELETE-PERMANENT' : 'DELETE-SOFT', path, extra.sessionId);
     return {
-      content: [{ type: 'text', text: `🗑️ Deleted: ${path}` }],
+      content: [{
+        type: 'text',
+        text: permanent
+          ? `🗑️ Permanently deleted: ${path}`
+          : `🗑️ Moved to trash: ${result.trashPath}`,
+      }],
     };
   }
 );
@@ -296,10 +366,14 @@ server.tool(
 // ─── HTTP / SSE Express Server ─────────────────────────────────────────────────
 
 const app = express();
-// NOTE: do NOT use express.json() globally — it consumes the body stream
-// before SSEServerTransport.handlePostMessage can read it.
 
-// Health check (unauthenticated — useful for Tailscale uptime monitoring)
+// #6: Body size limit for non-SSE routes
+app.use('/health', express.json({ limit: MAX_BODY_SIZE }));
+
+// #3: Rate limiting on all authenticated routes
+app.use(rateLimitMiddleware);
+
+// Health check (unauthenticated — useful for uptime monitoring)
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', vault: VAULT_PATH, server: 'obsidian-mcp' });
 });
@@ -320,6 +394,8 @@ app.get('/sse', authMiddleware, async (req, res) => {
   await server.connect(transport);
 });
 
+// NOTE: do NOT use express.json() here — SSEServerTransport.handlePostMessage
+// reads the raw request body stream directly.
 app.post('/messages', authMiddleware, async (req, res) => {
   const sessionId = req.query.sessionId as string;
   const transport = transports[sessionId];
@@ -332,11 +408,20 @@ app.post('/messages', authMiddleware, async (req, res) => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, '0.0.0.0', () => {
+// #7: Bind to loopback by default. Set BIND_ADDRESS=0.0.0.0 to expose externally.
+app.listen(PORT, BIND_ADDRESS, () => {
   console.log(`\n🟢  obsidian-mcp running`);
+  console.log(`   Bind     : ${BIND_ADDRESS}`);
   console.log(`   Port     : ${PORT}`);
   console.log(`   Vault    : ${VAULT_PATH}`);
   console.log(`   Daily    : ${DAILY_NOTE_FOLDER}/`);
-  console.log(`   Auth     : ${AUTH_TOKEN ? 'Bearer token enabled' : 'None (Tailscale ACLs only)'}`);
-  console.log(`   SSE URL  : http://0.0.0.0:${PORT}/sse\n`);
+  console.log(`   Auth     : ${AUTH_TOKEN ? 'Bearer token enabled' : 'None (network-level security only)'}`);
+  console.log(`   Max body : ${MAX_BODY_SIZE}`);
+  console.log(`   SSE URL  : http://${BIND_ADDRESS}:${PORT}/sse`);
+  if (!AUTH_TOKEN && BIND_ADDRESS !== '127.0.0.1') {
+    console.log(`\n⚠️  WARNING: No AUTH_TOKEN set and binding to ${BIND_ADDRESS}.`);
+    console.log(`   Anyone on your network can read/write your vault!`);
+    console.log(`   Set AUTH_TOKEN in .env for security.\n`);
+  }
+  console.log('');
 });

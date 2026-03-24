@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import matter from 'gray-matter';
 import { glob } from 'glob';
 import os from 'os';
@@ -15,6 +15,18 @@ export interface NoteResult {
 export interface SearchResult {
   path: string;
   matches: Array<{ line: number; text: string }>;
+}
+
+export interface WriteResult {
+  path: string;
+  created: boolean;
+  backedUp?: boolean;
+  backupPath?: string;
+}
+
+export interface DeleteResult {
+  path: string;
+  trashPath?: string;
 }
 
 export interface SyncStatus {
@@ -49,12 +61,23 @@ export class ObsidianVault {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+  // #5: Path traversal protection with symlink resolution
   private resolvePath(notePath: string): string {
     const resolved = path.resolve(this.vaultPath, notePath);
-    // Security: ensure we stay within the vault
-    if (!resolved.startsWith(this.vaultPath)) {
+
+    // First check: resolved path must be within vault
+    if (!resolved.startsWith(this.vaultPath + path.sep) && resolved !== this.vaultPath) {
       throw new Error(`Path traversal attempt blocked: ${notePath}`);
     }
+
+    // Second check: if the file exists, resolve symlinks and verify again
+    if (existsSync(resolved)) {
+      const realPath = realpathSync(resolved);
+      if (!realPath.startsWith(this.vaultPath + path.sep) && realPath !== this.vaultPath) {
+        throw new Error(`Symlink escape blocked: ${notePath} resolves to ${realPath}`);
+      }
+    }
+
     return resolved;
   }
 
@@ -83,19 +106,40 @@ export class ObsidianVault {
     return { path: notePath, content, frontmatter, rawContent };
   }
 
+  // #2: Overwrite protection + automatic backup
   async writeNote(
     notePath: string,
     content: string,
-    frontmatter?: Record<string, unknown>
-  ): Promise<{ path: string; created: boolean }> {
+    frontmatter?: Record<string, unknown>,
+    options: { overwrite?: boolean } = {}
+  ): Promise<WriteResult> {
     const fullPath = this.resolvePath(notePath);
     const exists = existsSync(fullPath);
+
+    // Block overwriting existing notes without explicit flag
+    if (exists && !options.overwrite) {
+      throw new Error(
+        `Note already exists: ${notePath}. Set overwrite: true to replace (a backup will be created).`
+      );
+    }
+
+    // Create backup before overwriting
+    let backedUp = false;
+    let backupPath: string | undefined;
+    if (exists && options.overwrite) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      backupPath = `${notePath}.${timestamp}.bak`;
+      const fullBackupPath = path.resolve(this.vaultPath, backupPath);
+      await fs.copyFile(fullPath, fullBackupPath);
+      backedUp = true;
+    }
+
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
     const output = frontmatter
       ? matter.stringify(content, frontmatter as Record<string, string>)
       : content;
     await fs.writeFile(fullPath, output, 'utf-8');
-    return { path: notePath, created: !exists };
+    return { path: notePath, created: !exists, backedUp, backupPath };
   }
 
   async appendNote(notePath: string, content: string): Promise<void> {
@@ -107,9 +151,34 @@ export class ObsidianVault {
     await fs.appendFile(fullPath, separator + content, 'utf-8');
   }
 
-  async deleteNote(notePath: string): Promise<void> {
+  // #1: Soft-delete to .trash/ by default
+  async deleteNote(
+    notePath: string,
+    options: { permanent?: boolean } = {}
+  ): Promise<DeleteResult> {
     const fullPath = this.resolvePath(notePath);
-    await fs.unlink(fullPath);
+
+    if (!existsSync(fullPath)) {
+      throw new Error(`Note not found: ${notePath}`);
+    }
+
+    if (options.permanent) {
+      await fs.unlink(fullPath);
+      return { path: notePath };
+    }
+
+    // Soft delete: move to .trash/ (Obsidian convention)
+    const trashDir = path.join(this.vaultPath, '.trash');
+    await fs.mkdir(trashDir, { recursive: true });
+
+    const basename = path.basename(notePath);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const trashName = `${basename.replace('.md', '')}.${timestamp}.md`;
+    const trashFullPath = path.join(trashDir, trashName);
+
+    await fs.rename(fullPath, trashFullPath);
+    const trashRelPath = path.relative(this.vaultPath, trashFullPath);
+    return { path: notePath, trashPath: trashRelPath };
   }
 
   // ─── Search ──────────────────────────────────────────────────────────────────
@@ -140,8 +209,9 @@ export class ObsidianVault {
         if (matches.length > 0) {
           results.push({ path: notePath, matches: matches.slice(0, 10) });
         }
-      } catch {
-        // skip unreadable files
+      } catch (err) {
+        // #9: Log errors instead of swallowing silently
+        console.warn(`[search] Error reading ${notePath}:`, (err as Error).message);
       }
     }
 
@@ -177,8 +247,9 @@ export class ObsidianVault {
           if (!tagMap[tag]) tagMap[tag] = [];
           if (!tagMap[tag].includes(notePath)) tagMap[tag].push(notePath);
         }
-      } catch {
-        // skip unreadable files
+      } catch (err) {
+        // #9: Log errors instead of swallowing silently
+        console.warn(`[tags] Error reading ${notePath}:`, (err as Error).message);
       }
     }
 
@@ -233,7 +304,7 @@ export class ObsidianVault {
     return this.writeNote(notePath, content, {
       date: formattedDate,
       created: new Date().toISOString(),
-    });
+    }, { overwrite: true }); // daily note creation always allows overwrite when explicitly requested
   }
 
   // ─── Sync Status ─────────────────────────────────────────────────────────────
@@ -270,15 +341,13 @@ export class ObsidianVault {
     recentlyModified.sort((a, b) => b.modified.localeCompare(a.modified));
 
     // 3. Try to read Obsidian's sync log (macOS path)
+    // #10: Log content is displayed but is low-risk (no user-supplied data injection)
     let syncLogSnippet: string | undefined;
     let syncLogPath: string | undefined;
 
     const candidateLogs = [
-      // macOS Obsidian app log
       path.join(os.homedir(), 'Library/Application Support/obsidian/obsidian.log'),
-      // Some versions write here
       path.join(os.homedir(), 'Library/Logs/obsidian/obsidian.log'),
-      // Vault-level sync debug file (rare but exists in some setups)
       path.join(this.vaultPath, '.obsidian', 'sync-log.txt'),
     ];
 
@@ -288,7 +357,6 @@ export class ObsidianVault {
         try {
           const raw = await fs.readFile(logPath, 'utf-8');
           const lines = raw.split('\n');
-          // Grab last 30 lines that mention sync
           const syncLines = lines
             .filter(l => /sync|upload|download|conflict|pull|push/i.test(l))
             .slice(-30);
