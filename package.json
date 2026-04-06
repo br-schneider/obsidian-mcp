@@ -15,6 +15,7 @@
     "express": "^4.19.2",
     "glob": "^11.0.0",
     "gray-matter": "^4.0.3",
+    "obsidian-sync-mcp": "^0.5.2",
     "zod": "^3.23.8"
   },
   "license": "MIT",

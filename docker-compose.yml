@@ -1,0 +1,37 @@
+# Cloud-mode local development: MCP server + CouchDB
+# Usage: docker compose up --build
+# Then configure Self-hosted LiveSync in Obsidian to point at http://localhost:5984
+
+services:
+  mcp:
+    build: .
+    ports:
+      - "3456:3456"
+    env_file: .env
+    environment:
+      VAULT_SOURCE: couchdb
+      COUCHDB_URL: http://couchdb:5984
+      COUCHDB_DB: obsidian-livesync
+      COUCHDB_USER: admin
+      COUCHDB_PASSWORD: changeme
+      BIND_ADDRESS: "0.0.0.0"
+    depends_on:
+      couchdb:
+        condition: service_healthy
+
+  couchdb:
+    image: couchdb:3
+    environment:
+      COUCHDB_USER: admin
+      COUCHDB_PASSWORD: changeme
+    ports:
+      - "5984:5984"
+    volumes:
+      - couchdb-data:/opt/couchdb/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5984/"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  couchdb-data:

@@ -10,3 +10,4 @@ export type {
 } from './types.js';
 
 export { FilesystemBackend } from './filesystem.js';
+export { CouchDBBackend } from './couchdb.js';

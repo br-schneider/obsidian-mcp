@@ -1,0 +1,47 @@
+# Fly.io deployment configuration for obsidian-mcp (cloud mode)
+#
+# Prerequisites:
+#   1. Install flyctl: https://fly.io/docs/flyctl/install/
+#   2. Sign up / log in: fly auth login
+#
+# Setup:
+#   fly launch --no-deploy          # creates app, don't deploy yet
+#   fly secrets set \
+#     AUTH_TOKEN=$(openssl rand -hex 32) \
+#     COUCHDB_URL=https://your-couchdb-host:5984 \
+#     COUCHDB_DB=obsidian-livesync \
+#     COUCHDB_USER=admin \
+#     COUCHDB_PASSWORD=your-password
+#   fly deploy
+#
+# CouchDB: You can run CouchDB on the same Fly.io org (fly apps create couchdb,
+# use a separate fly.toml with the couchdb:3 image and a persistent volume),
+# or use any external CouchDB instance.
+#
+# Cost: ~$3-4/month for a shared-cpu-1x machine with 256MB RAM.
+
+app = "obsidian-mcp"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  PORT = "3456"
+  BIND_ADDRESS = "0.0.0.0"
+  VAULT_SOURCE = "couchdb"
+
+[http_service]
+  internal_port = 3456
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

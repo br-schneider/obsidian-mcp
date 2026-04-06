@@ -49,6 +49,9 @@ export interface CreateDailyNoteResult {
 // ─── VaultBackend interface ──────────────────────────────────────────────────
 
 export interface VaultBackend {
+  /** Optional async initialization (e.g. CouchDB connection). Resolves when ready. */
+  init?(): Promise<void>;
+
   listNotes(folder?: string): Promise<string[]>;
 
   readNote(notePath: string): Promise<NoteResult>;

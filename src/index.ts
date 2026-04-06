@@ -14,12 +14,15 @@ process.on('unhandledRejection', (reason) => {
 });
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import type { VaultBackend } from './backends/index.js';
-import { FilesystemBackend } from './backends/index.js';
+import { FilesystemBackend, CouchDBBackend } from './backends/index.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+const VAULT_SOURCE = process.env.VAULT_SOURCE ?? 'filesystem';
 const VAULT_PATH = process.env.VAULT_PATH;
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
 const BIND_ADDRESS = process.env.BIND_ADDRESS ?? '127.0.0.1'; // #7: default to loopback
@@ -28,22 +31,64 @@ const DAILY_NOTE_FORMAT = process.env.DAILY_NOTE_FORMAT ?? 'YYYY-MM-DD'; // e.g.
 const AUTH_TOKEN = process.env.AUTH_TOKEN; // optional bearer token
 const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? '1mb'; // #6: request size limit
 
-if (!VAULT_PATH) {
-  console.error('❌  VAULT_PATH env var is required');
-  process.exit(1);
-}
+// CouchDB config (only used when VAULT_SOURCE=couchdb)
+const COUCHDB_URL = process.env.COUCHDB_URL ?? 'http://localhost:5984';
+const COUCHDB_DB = process.env.COUCHDB_DB ?? 'obsidian-livesync';
+const COUCHDB_USER = process.env.COUCHDB_USER ?? 'admin';
+const COUCHDB_PASSWORD = process.env.COUCHDB_PASSWORD ?? '';
+const COUCHDB_ENCRYPTION_PASSPHRASE = process.env.COUCHDB_ENCRYPTION_PASSPHRASE;
+const VAULT_NAME = process.env.VAULT_NAME; // optional, for obsidian:// deep links
 
 let vault: VaultBackend;
-try {
-  vault = new FilesystemBackend({
+
+async function initVault(): Promise<VaultBackend> {
+  if (VAULT_SOURCE === 'couchdb') {
+    if (!COUCHDB_PASSWORD) {
+      console.error('❌  COUCHDB_PASSWORD env var is required when VAULT_SOURCE=couchdb');
+      process.exit(1);
+    }
+    const backend = new CouchDBBackend({
+      url: COUCHDB_URL,
+      database: COUCHDB_DB,
+      username: COUCHDB_USER,
+      password: COUCHDB_PASSWORD,
+      encryptionPassphrase: COUCHDB_ENCRYPTION_PASSPHRASE,
+      dailyNoteFolder: DAILY_NOTE_FOLDER,
+      dailyNoteDateFormat: DAILY_NOTE_FORMAT,
+    });
+    await backend.init();
+    return backend;
+  }
+
+  // Default: filesystem
+  if (!VAULT_PATH) {
+    console.error('❌  VAULT_PATH env var is required when VAULT_SOURCE=filesystem');
+    process.exit(1);
+  }
+  const backend = new FilesystemBackend({
     vaultPath: VAULT_PATH,
     dailyNoteFolder: DAILY_NOTE_FOLDER,
     dailyNoteDateFormat: DAILY_NOTE_FORMAT,
   });
   console.log(`✅  Vault loaded: ${VAULT_PATH}`);
+  return backend;
+}
+
+try {
+  vault = await initVault();
 } catch (err) {
   console.error('❌  Failed to initialize vault:', err);
   process.exit(1);
+}
+
+// ─── Deep Links ──────────────────────────────────────────────────────────────
+
+const startTime = Date.now();
+
+function makeDeepLink(notePath: string): string {
+  if (!VAULT_NAME) return '';
+  const file = notePath.replace(/\.md$/, '');
+  return `\nobsidian://open?vault=${encodeURIComponent(VAULT_NAME)}&file=${encodeURIComponent(file)}`;
 }
 
 // ─── Auth Middleware ───────────────────────────────────────────────────────────
@@ -140,7 +185,7 @@ server.tool(
         ? `---\n${JSON.stringify(note.frontmatter, null, 2)}\n---\n\n`
         : '';
     return {
-      content: [{ type: 'text', text: fmStr + note.content }],
+      content: [{ type: 'text', text: fmStr + note.content + makeDeepLink(path) }],
     };
   }
 );
@@ -171,15 +216,11 @@ server.tool(
       { overwrite }
     );
     auditLog(result.created ? 'CREATE' : 'UPDATE', path, extra.sessionId);
+    const msg = result.created
+      ? `✅ Created: ${result.path}`
+      : `✅ Updated: ${result.path}` + (result.backedUp ? ` (backup: ${result.backupPath})` : '');
     return {
-      content: [
-        {
-          type: 'text',
-          text: result.created
-            ? `✅ Created: ${result.path}`
-            : `✅ Updated: ${result.path}` + (result.backedUp ? ` (backup: ${result.backupPath})` : ''),
-        },
-      ],
+      content: [{ type: 'text', text: msg + makeDeepLink(result.path) }],
     };
   }
 );
@@ -196,7 +237,7 @@ server.tool(
     await vault.appendNote(path, content);
     auditLog('APPEND', path, extra.sessionId);
     return {
-      content: [{ type: 'text', text: `✅ Appended to ${path}` }],
+      content: [{ type: 'text', text: `✅ Appended to ${path}` + makeDeepLink(path) }],
     };
   }
 );
@@ -394,34 +435,97 @@ app.use('/health', express.json({ limit: MAX_BODY_SIZE }));
 app.use(rateLimitMiddleware);
 
 // Health check (unauthenticated — useful for uptime monitoring)
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', vault: VAULT_PATH, server: 'obsidian-mcp' });
+app.get('/health', async (_req, res) => {
+  const uptimeMs = Date.now() - startTime;
+  const uptimeMin = Math.floor(uptimeMs / 60_000);
+  const health: Record<string, unknown> = {
+    status: 'ok',
+    server: 'obsidian-mcp',
+    backend: VAULT_SOURCE,
+    uptime: `${uptimeMin}m`,
+  };
+
+  try {
+    const notes = await vault.listNotes();
+    health.noteCount = notes.length;
+  } catch {
+    health.noteCount = 'unavailable';
+  }
+
+  if (VAULT_SOURCE === 'couchdb') {
+    health.couchdbUrl = COUCHDB_URL;
+    health.couchdbDatabase = COUCHDB_DB;
+  } else {
+    health.vault = VAULT_PATH;
+  }
+
+  res.json(health);
 });
 
-// SSE transport — one connection per client, each with its own McpServer
-const transports: Record<string, SSEServerTransport> = {};
+// ─── Streamable HTTP transport (preferred for cloud) ─────────────────────────
+// Each session gets its own transport + server pair, keyed by session ID.
+const streamableTransports = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+
+app.all('/mcp', authMiddleware, async (req, res) => {
+  // Check for existing session
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
+  if (sessionId && streamableTransports.has(sessionId)) {
+    const { transport } = streamableTransports.get(sessionId)!;
+    await transport.handleRequest(req, res);
+    return;
+  }
+
+  // New session — only POST (initialization) can create one
+  if (req.method === 'POST') {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+    const sessionServer = createServer();
+    await sessionServer.connect(transport);
+
+    // Store after connect so sessionId is set
+    if (transport.sessionId) {
+      streamableTransports.set(transport.sessionId, { transport, server: sessionServer });
+    }
+
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        streamableTransports.delete(transport.sessionId);
+        console.log(`← Streamable HTTP session closed: ${transport.sessionId}`);
+      }
+      sessionServer.close().catch(() => {});
+    };
+
+    await transport.handleRequest(req, res);
+    return;
+  }
+
+  // GET/DELETE without valid session
+  res.status(400).json({ error: 'No valid session. Send a POST to initialize.' });
+});
+
+// ─── SSE transport (fallback for older clients) ──────────────────────────────
+const sseTransports: Record<string, SSEServerTransport> = {};
 
 app.get('/sse', authMiddleware, async (req, res) => {
   console.log(`→ SSE connection from ${req.ip}`);
   const transport = new SSEServerTransport('/messages', res);
-  transports[transport.sessionId] = transport;
+  sseTransports[transport.sessionId] = transport;
 
   const sessionServer = createServer();
 
   res.on('close', () => {
     console.log(`← SSE disconnected: ${transport.sessionId}`);
-    delete transports[transport.sessionId];
+    delete sseTransports[transport.sessionId];
     sessionServer.close().catch(() => {});
   });
 
   await sessionServer.connect(transport);
 });
 
-// NOTE: do NOT use express.json() here — SSEServerTransport.handlePostMessage
-// reads the raw request body stream directly.
 app.post('/messages', authMiddleware, async (req, res) => {
   const sessionId = req.query.sessionId as string;
-  const transport = transports[sessionId];
+  const transport = sseTransports[sessionId];
   if (!transport) {
     res.status(404).json({ error: 'Session not found' });
     return;
@@ -441,13 +545,15 @@ app.post('/messages', authMiddleware, async (req, res) => {
 // #7: Bind to loopback by default. Set BIND_ADDRESS=0.0.0.0 to expose externally.
 app.listen(PORT, BIND_ADDRESS, () => {
   console.log(`\n🟢  obsidian-mcp running`);
+  console.log(`   Backend  : ${VAULT_SOURCE}`);
   console.log(`   Bind     : ${BIND_ADDRESS}`);
   console.log(`   Port     : ${PORT}`);
-  console.log(`   Vault    : ${VAULT_PATH}`);
+  console.log(`   Vault    : ${VAULT_SOURCE === 'couchdb' ? `${COUCHDB_URL}/${COUCHDB_DB}` : VAULT_PATH}`);
   console.log(`   Daily    : ${DAILY_NOTE_FOLDER}/`);
   console.log(`   Auth     : ${AUTH_TOKEN ? 'Bearer token enabled' : 'None (network-level security only)'}`);
   console.log(`   Max body : ${MAX_BODY_SIZE}`);
-  console.log(`   SSE URL  : http://${BIND_ADDRESS}:${PORT}/sse`);
+  console.log(`   MCP URL  : http://${BIND_ADDRESS}:${PORT}/mcp (Streamable HTTP)`);
+  console.log(`   SSE URL  : http://${BIND_ADDRESS}:${PORT}/sse (legacy fallback)`);
   if (!AUTH_TOKEN && BIND_ADDRESS !== '127.0.0.1') {
     console.log(`\n⚠️  WARNING: No AUTH_TOKEN set and binding to ${BIND_ADDRESS}.`);
     console.log(`   Anyone on your network can read/write your vault!`);
