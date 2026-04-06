@@ -5,42 +5,18 @@ import matter from 'gray-matter';
 import { glob } from 'glob';
 import os from 'os';
 
-export interface NoteResult {
-  path: string;
-  content: string;
-  frontmatter: Record<string, unknown>;
-  rawContent: string;
-}
+import type {
+  VaultBackend,
+  NoteResult,
+  SearchResult,
+  WriteResult,
+  DeleteResult,
+  SyncStatus,
+  DailyNoteResult,
+  CreateDailyNoteResult,
+} from './types.js';
 
-export interface SearchResult {
-  path: string;
-  matches: Array<{ line: number; text: string }>;
-}
-
-export interface WriteResult {
-  path: string;
-  created: boolean;
-  backedUp?: boolean;
-  backupPath?: string;
-}
-
-export interface DeleteResult {
-  path: string;
-  trashPath?: string;
-}
-
-export interface SyncStatus {
-  conflicts: string[];
-  recentlyModified: Array<{ path: string; modified: string }>;
-  syncLogSnippet?: string;
-  syncLogPath?: string;
-  vaultStats: {
-    totalNotes: number;
-    totalFiles: number;
-  };
-}
-
-export class ObsidianVault {
+export class FilesystemBackend implements VaultBackend {
   private vaultPath: string;
   private dailyNoteFolder: string;
   private dailyNoteDateFormat: string;
@@ -61,7 +37,7 @@ export class ObsidianVault {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-  // #5: Path traversal protection with symlink resolution
+  // Path traversal protection with symlink resolution
   private resolvePath(notePath: string): string {
     const resolved = path.resolve(this.vaultPath, notePath);
 
@@ -116,6 +92,22 @@ export class ObsidianVault {
     return null;
   }
 
+  /** Parse a date string input, avoiding timezone pitfalls */
+  private parseDateInput(dateStr: string): Date {
+    const parsed = this.parseFormattedDate(dateStr);
+    if (parsed) return parsed;
+    // For bare YYYY-MM-DD strings, append T12:00:00 to avoid UTC midnight -> previous day in local tz
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return new Date(`${dateStr}T12:00:00`);
+    }
+    return new Date(dateStr);
+  }
+
+  private getDailyNotePath(date: Date = new Date()): string {
+    const dateStr = this.formatDate(date);
+    return path.join(this.dailyNoteFolder, `${dateStr}.md`);
+  }
+
   // ─── Notes ───────────────────────────────────────────────────────────────────
 
   async listNotes(folder?: string): Promise<string[]> {
@@ -134,7 +126,7 @@ export class ObsidianVault {
     return { path: notePath, content, frontmatter, rawContent };
   }
 
-  // #2: Overwrite protection + automatic backup
+  // Overwrite protection + automatic backup
   async writeNote(
     notePath: string,
     content: string,
@@ -179,7 +171,7 @@ export class ObsidianVault {
     await fs.appendFile(fullPath, separator + content, 'utf-8');
   }
 
-  // #1: Soft-delete to .trash/ by default
+  // Soft-delete to .trash/ by default
   async deleteNote(
     notePath: string,
     options: { permanent?: boolean } = {}
@@ -238,7 +230,6 @@ export class ObsidianVault {
           results.push({ path: notePath, matches: matches.slice(0, 10) });
         }
       } catch (err) {
-        // #9: Log errors instead of swallowing silently
         console.warn(`[search] Error reading ${notePath}:`, (err as Error).message);
       }
     }
@@ -276,7 +267,6 @@ export class ObsidianVault {
           if (!tagMap[tag].includes(notePath)) tagMap[tag].push(notePath);
         }
       } catch (err) {
-        // #9: Log errors instead of swallowing silently
         console.warn(`[tags] Error reading ${notePath}:`, (err as Error).message);
       }
     }
@@ -288,27 +278,7 @@ export class ObsidianVault {
 
   // ─── Daily Notes ─────────────────────────────────────────────────────────────
 
-  getDailyNotePath(date: Date = new Date()): string {
-    const dateStr = this.formatDate(date);
-    return path.join(this.dailyNoteFolder, `${dateStr}.md`);
-  }
-
-  /** Parse a date string input, avoiding timezone pitfalls */
-  private parseDateInput(dateStr: string): Date {
-    const parsed = this.parseFormattedDate(dateStr);
-    if (parsed) return parsed;
-    // For bare YYYY-MM-DD strings, append T12:00:00 to avoid UTC midnight → previous day in local tz
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-      return new Date(`${dateStr}T12:00:00`);
-    }
-    return new Date(dateStr);
-  }
-
-  async getDailyNote(dateStr?: string): Promise<{
-    path: string;
-    exists: boolean;
-    note?: NoteResult;
-  }> {
+  async getDailyNote(dateStr?: string): Promise<DailyNoteResult> {
     const date = dateStr ? this.parseDateInput(dateStr) : new Date();
     const notePath = this.getDailyNotePath(date);
     const fullPath = this.resolvePath(notePath);
@@ -323,7 +293,7 @@ export class ObsidianVault {
 
   async createDailyNote(
     options: { dateStr?: string; template?: string; overwrite?: boolean } = {}
-  ): Promise<{ path: string; created: boolean }> {
+  ): Promise<CreateDailyNoteResult> {
     const { dateStr, template, overwrite = false } = options;
     const date = dateStr ? this.parseDateInput(dateStr) : new Date();
     const formattedDate = this.formatDate(date);
@@ -377,7 +347,6 @@ export class ObsidianVault {
     recentlyModified.sort((a, b) => b.modified.localeCompare(a.modified));
 
     // 3. Try to read Obsidian's sync log (macOS path)
-    // #10: Log content is displayed but is low-risk (no user-supplied data injection)
     let syncLogSnippet: string | undefined;
     let syncLogPath: string | undefined;
 

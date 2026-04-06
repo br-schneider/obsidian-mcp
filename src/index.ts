@@ -15,7 +15,8 @@ process.on('unhandledRejection', (reason) => {
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
-import { ObsidianVault } from './vault.js';
+import type { VaultBackend } from './backends/index.js';
+import { FilesystemBackend } from './backends/index.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -32,9 +33,9 @@ if (!VAULT_PATH) {
   process.exit(1);
 }
 
-let vault: ObsidianVault;
+let vault: VaultBackend;
 try {
-  vault = new ObsidianVault({
+  vault = new FilesystemBackend({
     vaultPath: VAULT_PATH,
     dailyNoteFolder: DAILY_NOTE_FOLDER,
     dailyNoteDateFormat: DAILY_NOTE_FORMAT,
