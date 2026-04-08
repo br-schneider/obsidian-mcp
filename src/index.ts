@@ -254,6 +254,52 @@ server.tool(
   }
 );
 
+// ── upload_attachment ─────────────────────────────────────────────────────────
+server.tool(
+  'upload_attachment',
+  'Upload a binary file (image, PDF, etc.) to the vault from base64-encoded data.',
+  {
+    path: z.string().describe('Path relative to vault root (e.g. "attachments/photo.png")'),
+    data: z.string().describe('Base64-encoded file content'),
+    overwrite: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Must be true to overwrite an existing file'),
+  },
+  async ({ path: filePath, data, overwrite }, extra) => {
+    const v = requireVault();
+    const vaultPath = (v as any).vaultPath as string;
+    const resolved = path.resolve(vaultPath, filePath);
+
+    // Path traversal protection
+    if (!resolved.startsWith(vaultPath + path.sep) && resolved !== vaultPath) {
+      throw new Error(`Path traversal attempt blocked: ${filePath}`);
+    }
+
+    if (existsSync(resolved) && !overwrite) {
+      throw new Error(`File already exists: ${filePath}. Set overwrite: true to replace.`);
+    }
+
+    // Ensure parent directory exists
+    await fs.mkdir(path.dirname(resolved), { recursive: true });
+
+    // Decode base64 and write
+    const buffer = Buffer.from(data, 'base64');
+    await fs.writeFile(resolved, buffer);
+
+    auditLog('UPLOAD', filePath, extra.sessionId);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `✅ Uploaded: ${filePath} (${buffer.length} bytes)`,
+        },
+      ],
+    };
+  }
+);
+
 // ── append_note ───────────────────────────────────────────────────────────────
 server.tool(
   'append_note',

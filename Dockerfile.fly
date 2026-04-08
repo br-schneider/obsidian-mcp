@@ -38,6 +38,7 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/init-obsidian \
 RUN echo "oneshot" > /etc/s6-overlay/s6-rc.d/init-obsidian/type
 COPY <<'INITSCRIPT' /etc/s6-overlay/s6-rc.d/init-obsidian/up
 #!/bin/sh
+exec > /proc/1/fd/1 2>&1
 set -e
 echo "[init] Logging in to Obsidian Sync..."
 ob login --auth-token "$OBSIDIAN_AUTH_TOKEN"
@@ -59,6 +60,7 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/obsidian-sync \
 RUN echo "longrun" > /etc/s6-overlay/s6-rc.d/obsidian-sync/type
 COPY <<'SYNCSCRIPT' /etc/s6-overlay/s6-rc.d/obsidian-sync/run
 #!/bin/sh
+exec > /proc/1/fd/1 2>&1
 cd /vault
 exec ob sync --continuous
 SYNCSCRIPT
