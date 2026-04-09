@@ -14,7 +14,8 @@ export interface NoteResult {
 
 export interface SearchResult {
   path: string;
-  matches: Array<{ line: number; text: string }>;
+  score: number;
+  matches: Array<{ line: number; text: string; context?: string[] }>;
 }
 
 export interface WriteResult {
@@ -48,17 +49,9 @@ export interface SyncStatus {
 
 export class ObsidianVault {
   private vaultPath: string;
-  private dailyNoteFolder: string;
-  private dailyNoteDateFormat: string;
 
-  constructor(config: {
-    vaultPath: string;
-    dailyNoteFolder?: string;
-    dailyNoteDateFormat?: string;
-  }) {
+  constructor(config: { vaultPath: string }) {
     this.vaultPath = path.resolve(config.vaultPath);
-    this.dailyNoteFolder = config.dailyNoteFolder ?? 'Journal';
-    this.dailyNoteDateFormat = config.dailyNoteDateFormat ?? 'YYYY-MM-DD';
 
     if (!existsSync(this.vaultPath)) {
       throw new Error(`Vault path does not exist: ${this.vaultPath}`);
@@ -88,41 +81,6 @@ export class ObsidianVault {
     }
 
     return resolved;
-  }
-
-  private formatDate(date: Date): string {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const dayName = days[date.getDay()];
-
-    switch (this.dailyNoteDateFormat) {
-      case 'MM-DD-YYYY DayOfWeek':
-        return `${m}-${d}-${y} ${dayName}`;
-      case 'MM-DD-YYYY':
-        return `${m}-${d}-${y}`;
-      case 'YYYY-MM-DD':
-      default:
-        return `${y}-${m}-${d}`;
-    }
-  }
-
-  /** Parse a date string back from the configured format */
-  private parseFormattedDate(dateStr: string): Date | null {
-    // Try MM-DD-YYYY DayOfWeek format
-    const mdyDay = dateStr.match(/^(\d{2})-(\d{2})-(\d{4})\s+\w+$/);
-    if (mdyDay) return new Date(`${mdyDay[3]}-${mdyDay[1]}-${mdyDay[2]}T12:00:00`);
-
-    // Try MM-DD-YYYY format
-    const mdy = dateStr.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-    if (mdy) return new Date(`${mdy[3]}-${mdy[1]}-${mdy[2]}T12:00:00`);
-
-    // Try YYYY-MM-DD format
-    const ymd = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (ymd) return new Date(`${ymd[1]}-${ymd[2]}-${ymd[3]}T12:00:00`);
-
-    return null;
   }
 
   // ─── Notes ───────────────────────────────────────────────────────────────────
@@ -285,31 +243,98 @@ export class ObsidianVault {
 
   // ─── Search ──────────────────────────────────────────────────────────────────
 
+  private extractTags(frontmatter: Record<string, unknown>): string[] {
+    if (!frontmatter.tags) return [];
+    const raw = Array.isArray(frontmatter.tags)
+      ? frontmatter.tags
+      : String(frontmatter.tags).split(',').map(t => t.trim());
+    return raw.filter(Boolean).map(String);
+  }
+
   async searchVault(
     query: string,
-    options: { folder?: string; caseSensitive?: boolean; maxResults?: number } = {}
+    options: {
+      folder?: string;
+      tags?: string[];
+      frontmatter?: Record<string, string>;
+      caseSensitive?: boolean;
+      maxResults?: number;
+    } = {}
   ): Promise<SearchResult[]> {
-    const { folder, caseSensitive = false, maxResults = 20 } = options;
+    const { folder, tags, frontmatter: fmFilter, caseSensitive = false, maxResults = 20 } = options;
     const notes = await this.listNotes(folder);
     const results: SearchResult[] = [];
-    const queryTest = caseSensitive ? query : query.toLowerCase();
+    const q = caseSensitive ? query : query.toLowerCase();
+    const normalize = (s: string) => caseSensitive ? s : s.toLowerCase();
 
     for (const notePath of notes) {
-      if (results.length >= maxResults) break;
       try {
-        const { rawContent } = await this.readNote(notePath);
-        const lines = rawContent.split('\n');
-        const matches: Array<{ line: number; text: string }> = [];
+        const { rawContent, frontmatter: fm, content } = await this.readNote(notePath);
 
-        lines.forEach((line, i) => {
-          const testLine = caseSensitive ? line : line.toLowerCase();
-          if (testLine.includes(queryTest)) {
-            matches.push({ line: i + 1, text: line.trim() });
+        // Tag filter: note must have ALL specified tags
+        if (tags && tags.length > 0) {
+          const noteTags = this.extractTags(fm).map(t => t.toLowerCase());
+          if (!tags.every(t => noteTags.includes(t.toLowerCase()))) continue;
+        }
+
+        // Frontmatter field filter: note must match ALL specified key-value pairs
+        if (fmFilter) {
+          const skip = Object.entries(fmFilter).some(([key, val]) => {
+            const fmVal = fm[key];
+            if (fmVal == null) return true;
+            return normalize(String(fmVal)) !== normalize(val);
+          });
+          if (skip) continue;
+        }
+
+        // If query is empty, return all notes that pass the filters
+        if (!query) {
+          results.push({ path: notePath, score: 1, matches: [] });
+          if (results.length >= maxResults) break;
+          continue;
+        }
+
+        // Score and collect matches
+        let score = 0;
+        const matches: Array<{ line: number; text: string; context?: string[] }> = [];
+        const lines = rawContent.split('\n');
+
+        // Path/filename match
+        if (normalize(notePath).includes(q)) {
+          score += 10;
+        }
+
+        // Frontmatter value match (check raw values, not line-by-line)
+        const fmValues = Object.values(fm).map(v => normalize(String(v)));
+        if (fmValues.some(v => v.includes(q))) {
+          score += 5;
+        }
+
+        // Content line matching with context
+        const bodyLines = content.split('\n');
+        let bodyHits = 0;
+        bodyLines.forEach((line, i) => {
+          if (!normalize(line).includes(q)) return;
+
+          const isHeading = line.trimStart().startsWith('#');
+          if (isHeading) {
+            score += 3;
+          } else {
+            bodyHits++;
+          }
+
+          if (matches.length < 10) {
+            const ctx: string[] = [];
+            if (i > 0) ctx.push(bodyLines[i - 1].trim());
+            ctx.push(line.trim());
+            if (i < bodyLines.length - 1) ctx.push(bodyLines[i + 1].trim());
+            matches.push({ line: i + 1, text: line.trim(), context: ctx });
           }
         });
+        score += Math.min(bodyHits, 5);
 
-        if (matches.length > 0) {
-          results.push({ path: notePath, matches: matches.slice(0, 10) });
+        if (score > 0) {
+          results.push({ path: notePath, score, matches });
         }
       } catch (err) {
         // #9: Log errors instead of swallowing silently
@@ -317,7 +342,9 @@ export class ObsidianVault {
       }
     }
 
-    return results;
+    // Sort by relevance score descending
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, maxResults);
   }
 
   // ─── Tags ────────────────────────────────────────────────────────────────────
@@ -358,63 +385,6 @@ export class ObsidianVault {
     return Object.fromEntries(
       Object.entries(tagMap).sort(([a], [b]) => a.localeCompare(b))
     );
-  }
-
-  // ─── Daily Notes ─────────────────────────────────────────────────────────────
-
-  getDailyNotePath(date: Date = new Date()): string {
-    const dateStr = this.formatDate(date);
-    return path.join(this.dailyNoteFolder, `${dateStr}.md`);
-  }
-
-  /** Parse a date string input, avoiding timezone pitfalls */
-  private parseDateInput(dateStr: string): Date {
-    const parsed = this.parseFormattedDate(dateStr);
-    if (parsed) return parsed;
-    // For bare YYYY-MM-DD strings, append T12:00:00 to avoid UTC midnight → previous day in local tz
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-      return new Date(`${dateStr}T12:00:00`);
-    }
-    return new Date(dateStr);
-  }
-
-  async getDailyNote(dateStr?: string): Promise<{
-    path: string;
-    exists: boolean;
-    note?: NoteResult;
-  }> {
-    const date = dateStr ? this.parseDateInput(dateStr) : new Date();
-    const notePath = this.getDailyNotePath(date);
-    const fullPath = this.resolvePath(notePath);
-
-    if (!existsSync(fullPath)) {
-      return { path: notePath, exists: false };
-    }
-
-    const note = await this.readNote(notePath);
-    return { path: notePath, exists: true, note };
-  }
-
-  async createDailyNote(
-    options: { dateStr?: string; template?: string; overwrite?: boolean } = {}
-  ): Promise<{ path: string; created: boolean }> {
-    const { dateStr, template, overwrite = false } = options;
-    const date = dateStr ? this.parseDateInput(dateStr) : new Date();
-    const formattedDate = this.formatDate(date);
-    const notePath = this.getDailyNotePath(date);
-    const fullPath = this.resolvePath(notePath);
-
-    if (existsSync(fullPath) && !overwrite) {
-      return { path: notePath, created: false };
-    }
-
-    const content = template
-      ? template
-          .replace(/{{date}}/g, formattedDate)
-          .replace(/{{title}}/g, formattedDate)
-      : '';
-
-    return this.writeNote(notePath, content, undefined, { overwrite: true });
   }
 
   // ─── Sync Status ─────────────────────────────────────────────────────────────

@@ -31,8 +31,6 @@ import { ObsidianVault } from './vault.js';
 const VAULT_PATH = process.env.VAULT_PATH;
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
 const BIND_ADDRESS = process.env.BIND_ADDRESS ?? '127.0.0.1'; // #7: default to loopback
-const DAILY_NOTE_FOLDER = process.env.DAILY_NOTE_FOLDER ?? 'Journal';
-const DAILY_NOTE_FORMAT = process.env.DAILY_NOTE_FORMAT ?? 'YYYY-MM-DD'; // e.g. 'MM-DD-YYYY DayOfWeek'
 const AUTH_TOKEN = process.env.AUTH_TOKEN; // optional bearer token
 const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? '1mb'; // #6: request size limit
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
@@ -54,11 +52,7 @@ let vault: ObsidianVault;
 async function waitForVault(): Promise<void> {
   // If vault path already exists, init immediately
   if (existsSync(VAULT_PATH!)) {
-    vault = new ObsidianVault({
-      vaultPath: VAULT_PATH!,
-      dailyNoteFolder: DAILY_NOTE_FOLDER,
-      dailyNoteDateFormat: DAILY_NOTE_FORMAT,
-    });
+    vault = new ObsidianVault({ vaultPath: VAULT_PATH! });
     vaultReady = true;
     console.log(`✅  Vault loaded: ${VAULT_PATH}`);
     return;
@@ -81,11 +75,7 @@ async function waitForVault(): Promise<void> {
       }).catch(() => []);
 
       if (mdFiles.length > 0) {
-        vault = new ObsidianVault({
-          vaultPath: VAULT_PATH!,
-          dailyNoteFolder: DAILY_NOTE_FOLDER,
-          dailyNoteDateFormat: DAILY_NOTE_FORMAT,
-        });
+        vault = new ObsidianVault({ vaultPath: VAULT_PATH! });
         vaultReady = true;
         console.log(`✅  Vault synced and loaded: ${VAULT_PATH} (${mdFiles.length} notes)`);
         return;
@@ -99,11 +89,7 @@ async function waitForVault(): Promise<void> {
 
   // Timeout — start anyway if directory exists (might be an empty vault)
   if (existsSync(VAULT_PATH!)) {
-    vault = new ObsidianVault({
-      vaultPath: VAULT_PATH!,
-      dailyNoteFolder: DAILY_NOTE_FOLDER,
-      dailyNoteDateFormat: DAILY_NOTE_FORMAT,
-    });
+    vault = new ObsidianVault({ vaultPath: VAULT_PATH! });
     vaultReady = true;
     console.log(`⚠️  Vault loaded after timeout (may still be syncing): ${VAULT_PATH}`);
     return;
@@ -367,24 +353,35 @@ server.tool(
 // ── search_vault ──────────────────────────────────────────────────────────────
 server.tool(
   'search_vault',
-  'Full-text search across all notes in the vault',
+  'Search notes by content, tags, or metadata. Results ranked by relevance (filename > frontmatter > headings > body). Use tags/frontmatter filters to narrow results without a text query.',
   {
-    query: z.string().describe('Search string'),
+    query: z.string().describe('Search string (searches content AND file paths). Use empty string with tags/frontmatter filters to browse by metadata.'),
+    tags: z.array(z.string()).optional().describe('Filter to notes with ALL these tags (e.g. ["finance", "budget"])'),
+    frontmatter: z.record(z.string()).optional().describe('Filter by frontmatter fields (e.g. {"status": "draft"})'),
     folder: z.string().optional().describe('Limit search to this folder'),
     caseSensitive: z.boolean().optional().default(false),
     maxResults: z.number().optional().default(20),
   },
-  async ({ query, folder, caseSensitive, maxResults }) => {
-    const results = await requireVault().searchVault(query, { folder, caseSensitive, maxResults });
+  async ({ query, tags, frontmatter, folder, caseSensitive, maxResults }) => {
+    const results = await requireVault().searchVault(query, { folder, tags, frontmatter, caseSensitive, maxResults });
     if (results.length === 0) {
-      return { content: [{ type: 'text', text: `No results for "${query}"` }] };
+      return { content: [{ type: 'text', text: `No results for "${query}"${tags ? ` tags:[${tags.join(',')}]` : ''}` }] };
     }
     const formatted = results
-      .map(
-        r =>
-          `**${r.path}**\n` +
-          r.matches.map(m => `  L${m.line}: ${m.text}`).join('\n')
-      )
+      .map(r => {
+        const header = `**${r.path}** (score: ${r.score})`;
+        if (r.matches.length === 0) return header;
+        const matchLines = r.matches.map(m => {
+          if (m.context && m.context.length > 0) {
+            return m.context.map(c => {
+              const prefix = c === m.text ? `> L${m.line}:` : `  ...`;
+              return `  ${prefix} ${c}`;
+            }).join('\n');
+          }
+          return `  L${m.line}: ${m.text}`;
+        }).join('\n');
+        return `${header}\n${matchLines}`;
+      })
       .join('\n\n');
     return { content: [{ type: 'text', text: formatted }] };
   }
@@ -393,7 +390,7 @@ server.tool(
 // ── list_tags ─────────────────────────────────────────────────────────────────
 server.tool(
   'list_tags',
-  'List all tags used in the vault and which notes use each tag',
+  'List all tags used in the vault and which notes use each tag. Useful for discovering what topics exist before searching.',
   {},
   async () => {
     const tags = await requireVault().listTags();
@@ -405,72 +402,6 @@ server.tool(
       .map(([tag, paths]) => `#${tag} (${paths.length})\n${paths.map(p => `  - ${p}`).join('\n')}`)
       .join('\n\n');
     return { content: [{ type: 'text', text: formatted }] };
-  }
-);
-
-// ── get_daily_note ────────────────────────────────────────────────────────────
-server.tool(
-  'get_daily_note',
-  'Get today\'s daily note (or a specific date\'s note)',
-  {
-    date: z
-      .string()
-      .optional()
-      .describe('ISO date string, e.g. "2025-06-15". Defaults to today.'),
-  },
-  async ({ date }) => {
-    const result = await requireVault().getDailyNote(date);
-    if (!result.exists) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Daily note not found at ${result.path}. Use create_daily_note to create it.`,
-          },
-        ],
-      };
-    }
-    const note = result.note!;
-    const fmStr =
-      Object.keys(note.frontmatter).length > 0
-        ? `---\n${JSON.stringify(note.frontmatter, null, 2)}\n---\n\n`
-        : '';
-    return {
-      content: [{ type: 'text', text: fmStr + note.content }],
-    };
-  }
-);
-
-// ── create_daily_note ─────────────────────────────────────────────────────────
-server.tool(
-  'create_daily_note',
-  'Create today\'s daily note (or a specific date\'s note) from a template',
-  {
-    date: z.string().optional().describe('ISO date string. Defaults to today.'),
-    template: z
-      .string()
-      .optional()
-      .describe(
-        'Note template. Use {{date}} as a placeholder. Defaults to a standard template.'
-      ),
-    overwrite: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe('Overwrite if note already exists'),
-  },
-  async ({ date, template, overwrite }) => {
-    const result = await requireVault().createDailyNote({ dateStr: date, template, overwrite });
-    return {
-      content: [
-        {
-          type: 'text',
-          text: result.created
-            ? `✅ Created daily note: ${result.path}`
-            : `ℹ️ Daily note already exists: ${result.path} (use overwrite: true to replace)`,
-        },
-      ],
-    };
   }
 );
 
@@ -653,7 +584,6 @@ app.listen(PORT, BIND_ADDRESS, () => {
   console.log(`   Bind     : ${BIND_ADDRESS}`);
   console.log(`   Port     : ${PORT}`);
   console.log(`   Vault    : ${VAULT_PATH}`);
-  console.log(`   Daily    : ${DAILY_NOTE_FOLDER}/`);
   console.log(`   Auth     : ${AUTH_TOKEN ? 'Bearer token enabled' : 'None (network-level security only)'}`);
   console.log(`   Max body : ${MAX_BODY_SIZE}`);
   console.log(`   SSE URL  : http://${BIND_ADDRESS}:${PORT}/sse`);

@@ -14,11 +14,11 @@
 #
 # Cost: ~$3-5/month (shared-cpu-1x, 256MB RAM, 1GB volume)
 
-app = "obsidian-mcp"
+app = "obsidian-mcp-dark-water-560"
 primary_region = "sjc"
 
 [build]
-  dockerfile = "Dockerfile.fly"
+  dockerfile = "Dockerfile.railway"
 
 [env]
   PORT = "3456"
