@@ -121,7 +121,7 @@ fly secrets set \
   OBSIDIAN_AUTH_TOKEN=<your-token> \
   AUTH_TOKEN=$(openssl rand -hex 32) \
   VAULT_NAME=<your-vault-name>
-fly deploy --dockerfile Dockerfile.fly
+fly deploy
 ```
 
 **Cost:** ~$3-5/month (shared-cpu-1x, 256MB, 1GB volume).

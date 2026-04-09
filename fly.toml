@@ -7,7 +7,7 @@
 #        OBSIDIAN_AUTH_TOKEN=<your-token> \
 #        AUTH_TOKEN=$(openssl rand -hex 32) \
 #        VAULT_NAME=<your-vault-name>
-#   4. fly deploy --dockerfile Dockerfile.fly
+#   4. fly deploy
 #
 # Get your Obsidian auth token:
 #   docker run --rm -it --entrypoint get-token ghcr.io/belphemur/obsidian-headless-sync-docker:v0.0.8
@@ -18,7 +18,10 @@ app = "obsidian-mcp-dark-water-560"
 primary_region = "sjc"
 
 [build]
-  dockerfile = "Dockerfile.railway"
+  # Fly uses the [build] section as the source of truth for image builds.
+  # Keep this pointed at the Fly-specific supervisor image so Fly deploys
+  # actually pick up the hardened Dockerfile intended for this platform.
+  dockerfile = "Dockerfile.fly"
 
 [env]
   PORT = "3456"
