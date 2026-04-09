@@ -1,14 +1,20 @@
-# Combined container for Railway: obsidian-headless sync + obsidian-mcp
+# Combined container for Fly/Railway: obsidian-headless sync + obsidian-mcp
 # Uses a simple bash entrypoint to supervise both processes.
 
-FROM node:22-slim AS builder
+FROM node:22-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383 AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:22-slim
+FROM node:22-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
+
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 obsidian \
+    && useradd --system --uid 10001 --gid obsidian --create-home --home-dir /home/obsidian --shell /usr/sbin/nologin obsidian
 
 # Install obsidian-headless CLI
 RUN npm install -g obsidian-headless@0.0.8 && npm cache clean --force
@@ -19,42 +25,102 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY package.json .
 
-# Create vault directory
-RUN mkdir -p /vault
+# Create vault and runtime directories
+RUN mkdir -p /vault /home/obsidian/.obsidian-headless /home/obsidian/.config \
+    && chown -R obsidian:obsidian /home/obsidian /app \
+    && chmod 700 /home/obsidian/.obsidian-headless
+
+COPY <<'SYNC' /app/run-sync.sh
+#!/bin/bash
+set -euo pipefail
+
+cd /vault
+exec ob sync --continuous \
+  > >(sed -u -E \
+    -e 's#^Checking .+$#Checking [redacted]#' \
+    -e 's#^Downloading .+$#Downloading [redacted]#' \
+    -e 's#^Uploading .+$#Uploading [redacted]#' \
+    -e 's#^Deleting .+$#Deleting [redacted]#') \
+  2> >(sed -u -E \
+    -e 's#^Checking .+$#Checking [redacted]#' \
+    -e 's#^Downloading .+$#Downloading [redacted]#' \
+    -e 's#^Uploading .+$#Uploading [redacted]#' \
+    -e 's#^Deleting .+$#Deleting [redacted]#' >&2)
+SYNC
+
+COPY <<'MCP' /app/run-mcp.sh
+#!/bin/bash
+set -euo pipefail
+
+cd /app
+exec node dist/index.js
+MCP
+
+RUN chmod +x /app/run-sync.sh /app/run-mcp.sh
 
 # Startup script: login, setup, sync in background, then start MCP server
 COPY <<'ENTRYPOINT' /app/start.sh
 #!/bin/bash
-set -e
+set -euo pipefail
+
+APP_USER="obsidian"
+APP_HOME="/home/obsidian"
+AUTH_DIR="$APP_HOME/.obsidian-headless"
+CONFIG_DIR="$APP_HOME/.config"
+
+export HOME="$APP_HOME"
+export XDG_CONFIG_HOME="$CONFIG_DIR"
+
+run_as_app() {
+  gosu "$APP_USER" env HOME="$APP_HOME" XDG_CONFIG_HOME="$CONFIG_DIR" "$@"
+}
+
+cleanup() {
+  kill "$SYNC_PID" "$MCP_PID" 2>/dev/null || true
+}
+
+echo "[init] Preparing runtime directories..."
+mkdir -p "$AUTH_DIR" "$CONFIG_DIR" /vault
+chown -R "$APP_USER:$APP_USER" "$APP_HOME" /vault
+chmod 700 "$AUTH_DIR"
 
 echo "[init] Setting up Obsidian Sync credentials..."
-mkdir -p ~/.obsidian-headless
-echo -n "$OBSIDIAN_AUTH_TOKEN" > ~/.obsidian-headless/auth_token
+printf "%s" "$OBSIDIAN_AUTH_TOKEN" > "$AUTH_DIR/auth_token"
+chown "$APP_USER:$APP_USER" "$AUTH_DIR/auth_token"
+chmod 600 "$AUTH_DIR/auth_token"
 
-echo "[init] Setting up vault: $VAULT_NAME"
-cd /vault
-if [ -n "$VAULT_PASSWORD" ]; then
-  echo "[init] Setting up with E2E encryption..."
-  ob sync-setup --vault "$VAULT_NAME" --password "$VAULT_PASSWORD"
-else
-  ob sync-setup --vault "$VAULT_NAME"
-fi
+echo "[init] Setting up vault"
+run_as_app bash -lc '
+  cd /vault
+  if [ -n "${VAULT_PASSWORD:-}" ]; then
+    echo "[init] Setting up with E2E encryption..."
+    ob sync-setup --vault "$VAULT_NAME" --password "$VAULT_PASSWORD"
+  else
+    ob sync-setup --vault "$VAULT_NAME"
+  fi
+'
 
 echo "[init] Starting continuous sync in background..."
-ob sync --continuous &
+run_as_app /app/run-sync.sh &
 SYNC_PID=$!
 
 echo "[init] Starting obsidian-mcp server..."
-cd /app
-node dist/index.js &
+run_as_app /app/run-mcp.sh &
 MCP_PID=$!
 
 # If either process exits, kill the other and exit
-trap "kill $SYNC_PID $MCP_PID 2>/dev/null; exit 1" SIGTERM SIGINT
-wait -n $SYNC_PID $MCP_PID
+trap 'cleanup; exit 1' SIGTERM SIGINT
+set +e
+wait -n "$SYNC_PID" "$MCP_PID"
+STATUS=$?
+set -e
 echo "[error] A process exited unexpectedly, shutting down..."
-kill $SYNC_PID $MCP_PID 2>/dev/null
-exit 1
+cleanup
+wait "$SYNC_PID" "$MCP_PID" 2>/dev/null || true
+if [ "$STATUS" -eq 0 ]; then
+  STATUS=1
+fi
+exit "$STATUS"
 ENTRYPOINT
 RUN chmod +x /app/start.sh
 
