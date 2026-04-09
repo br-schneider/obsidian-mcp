@@ -19,9 +19,9 @@ primary_region = "sjc"
 
 [build]
   # Fly uses the [build] section as the source of truth for image builds.
-  # Keep this pointed at the Fly-specific supervisor image so Fly deploys
-  # actually pick up the hardened Dockerfile intended for this platform.
-  dockerfile = "Dockerfile.fly"
+  # Keep this on the bash-supervised image for now: the s6-based image in
+  # Dockerfile.fly exits on Fly with "s6-overlay-suexec: fatal: can only run as pid 1".
+  dockerfile = "Dockerfile.railway"
 
 [env]
   PORT = "3456"

@@ -1,7 +1,6 @@
-# Combined container for Fly.io: obsidian-headless sync + obsidian-mcp
-# Uses s6-overlay to supervise both processes in a single container.
-#
-# Deploy: fly deploy --dockerfile Dockerfile.fly
+# Experimental s6-based combined container for obsidian-headless sync + obsidian-mcp.
+# It is not the active Fly deploy path today because Fly does not hand /init PID 1
+# in this app's runtime, which causes s6-overlay startup to fail.
 
 FROM node:20-slim AS builder
 WORKDIR /app
