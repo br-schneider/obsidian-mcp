@@ -236,7 +236,7 @@ server.tool(
 // #2: Requires overwrite flag for existing notes
 server.tool(
   'write_note',
-  'Create or update a note. Set overwrite: true to replace an existing note (a backup is created automatically).',
+  'Create a new note or fully replace an existing one. For modifying parts of an existing note, prefer edit_note (search-and-replace) or append_note instead — they are safer because they only touch the targeted text. Set overwrite: true to replace an existing note (a backup is created automatically).',
   {
     path: z.string().describe('Path relative to vault root'),
     content: z.string().describe('Markdown content (excluding frontmatter)'),
