@@ -1,45 +1,47 @@
-import 'dotenv/config';
-import express from 'express';
-import { timingSafeEqual } from 'crypto';
+import "dotenv/config";
+import express from "express";
+import { timingSafeEqual } from "crypto";
 
 // ─── Crash Protection ────────────────────────────────────────────────────────
 // Log unhandled errors and exit. The process manager (pm2, Docker, s6) should
 // handle restarts. Continuing after an uncaught exception risks running in an
 // undefined state which could compromise security invariants.
 
-process.on('uncaughtException', (err) => {
+process.on("uncaughtException", (err) => {
   console.error(`[crash-guard] Uncaught exception: ${err.message}`);
   console.error(err.stack);
   process.exit(1);
 });
 
-process.on('unhandledRejection', (reason) => {
+process.on("unhandledRejection", (reason) => {
   console.error(`[crash-guard] Unhandled rejection:`, reason);
   process.exit(1);
 });
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { z } from 'zod';
-import { existsSync } from 'fs';
-import { glob } from 'glob';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { ObsidianVault } from './vault.js';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { z } from "zod";
+import { existsSync } from "fs";
+import { glob } from "glob";
+import * as fs from "fs/promises";
+import * as path from "path";
+import { ObsidianVault } from "./vault.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const VAULT_PATH = process.env.VAULT_PATH;
-const PORT = parseInt(process.env.PORT ?? '3456', 10);
-const BIND_ADDRESS = process.env.BIND_ADDRESS ?? '127.0.0.1'; // #7: default to loopback
+const PORT = parseInt(process.env.PORT ?? "3456", 10);
+const BIND_ADDRESS = process.env.BIND_ADDRESS ?? "127.0.0.1"; // #7: default to loopback
 const AUTH_TOKEN = process.env.AUTH_TOKEN; // optional bearer token
-const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? '1mb'; // #6: request size limit
+const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? "1mb"; // #6: request size limit
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+  ? process.env.ALLOWED_ORIGINS.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
   : [];
-const SYNC_WAIT_TIMEOUT = parseInt(process.env.SYNC_WAIT_TIMEOUT ?? '300', 10); // seconds
+const SYNC_WAIT_TIMEOUT = parseInt(process.env.SYNC_WAIT_TIMEOUT ?? "300", 10); // seconds
 
 if (!VAULT_PATH) {
-  console.error('❌  VAULT_PATH env var is required');
+  console.error("❌  VAULT_PATH env var is required");
   process.exit(1);
 }
 
@@ -59,30 +61,36 @@ async function waitForVault(): Promise<void> {
   }
 
   // Wait for vault path to appear (sync container may still be downloading)
-  console.log(`⏳  Waiting for vault at ${VAULT_PATH} (sync may still be in progress)...`);
+  console.log(
+    `⏳  Waiting for vault at ${VAULT_PATH} (sync may still be in progress)...`,
+  );
   const deadline = Date.now() + SYNC_WAIT_TIMEOUT * 1000;
   let waitLoops = 0;
 
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, 3000));
     waitLoops++;
 
     if (existsSync(VAULT_PATH!)) {
       // Check if there's at least one .md file (initial sync might still be creating the dir)
-      const mdFiles = await glob('**/*.md', {
+      const mdFiles = await glob("**/*.md", {
         cwd: VAULT_PATH!,
-        ignore: ['**/.obsidian/**', '**/.trash/**'],
+        ignore: ["**/.obsidian/**", "**/.trash/**"],
       }).catch(() => []);
 
       if (mdFiles.length > 0) {
         vault = new ObsidianVault({ vaultPath: VAULT_PATH! });
         vaultReady = true;
-        console.log(`✅  Vault synced and loaded: ${VAULT_PATH} (${mdFiles.length} notes)`);
+        console.log(
+          `✅  Vault synced and loaded: ${VAULT_PATH} (${mdFiles.length} notes)`,
+        );
         return;
       }
       // Log every 5th iteration (~15s) to avoid spam
       if (waitLoops % 5 === 0) {
-        console.log(`⏳  Vault directory exists but no .md files yet, waiting...`);
+        console.log(
+          `⏳  Vault directory exists but no .md files yet, waiting...`,
+        );
       }
     }
   }
@@ -91,11 +99,15 @@ async function waitForVault(): Promise<void> {
   if (existsSync(VAULT_PATH!)) {
     vault = new ObsidianVault({ vaultPath: VAULT_PATH! });
     vaultReady = true;
-    console.log(`⚠️  Vault loaded after timeout (may still be syncing): ${VAULT_PATH}`);
+    console.log(
+      `⚠️  Vault loaded after timeout (may still be syncing): ${VAULT_PATH}`,
+    );
     return;
   }
 
-  console.error(`❌  Vault path ${VAULT_PATH} did not appear within ${SYNC_WAIT_TIMEOUT}s`);
+  console.error(
+    `❌  Vault path ${VAULT_PATH} did not appear within ${SYNC_WAIT_TIMEOUT}s`,
+  );
   process.exit(1);
 }
 
@@ -107,10 +119,10 @@ async function waitForVault(): Promise<void> {
 function authMiddleware(
   req: express.Request,
   res: express.Response,
-  next: express.NextFunction
+  next: express.NextFunction,
 ) {
   if (!AUTH_TOKEN) return next(); // no auth configured → open (rely on network-level security)
-  const header = req.headers.authorization ?? '';
+  const header = req.headers.authorization ?? "";
   const expected = `Bearer ${AUTH_TOKEN}`;
   // Use timing-safe comparison to prevent token recovery via response-time analysis
   const headerBuf = Buffer.from(header);
@@ -121,7 +133,7 @@ function authMiddleware(
   ) {
     return next();
   }
-  res.status(401).json({ error: 'Unauthorized' });
+  res.status(401).json({ error: "Unauthorized" });
 }
 
 // ─── Audit Logger ─────────────────────────────────────────────────────────────
@@ -129,7 +141,7 @@ function authMiddleware(
 
 function auditLog(action: string, path: string, ip?: string) {
   const ts = new Date().toISOString();
-  const src = ip ? ` from ${ip}` : '';
+  const src = ip ? ` from ${ip}` : "";
   console.log(`[audit] ${ts} ${action}: ${path}${src}`);
 }
 
@@ -143,9 +155,9 @@ const requestCounts = new Map<string, { count: number; resetAt: number }>();
 function rateLimitMiddleware(
   req: express.Request,
   res: express.Response,
-  next: express.NextFunction
+  next: express.NextFunction,
 ) {
-  const ip = req.ip ?? 'unknown';
+  const ip = req.ip ?? "unknown";
   const now = Date.now();
   let entry = requestCounts.get(ip);
 
@@ -156,7 +168,7 @@ function rateLimitMiddleware(
 
   entry.count++;
   if (entry.count > rateLimitMax) {
-    res.status(429).json({ error: 'Too many requests. Try again later.' });
+    res.status(429).json({ error: "Too many requests. Try again later." });
     return;
   }
 
@@ -176,282 +188,362 @@ setInterval(() => {
 
 function requireVault(): ObsidianVault {
   if (!vaultReady) {
-    throw new Error('Vault not yet synced — waiting for Obsidian Sync to complete initial download.');
+    throw new Error(
+      "Vault not yet synced — waiting for Obsidian Sync to complete initial download.",
+    );
   }
   return vault;
 }
 
 function createServer(): McpServer {
-const server = new McpServer({
-  name: 'obsidian-mcp',
-  version: '1.0.0',
-});
+  const server = new McpServer({
+    name: "obsidian-mcp",
+    version: "1.0.0",
+  });
 
-// ── list_notes ────────────────────────────────────────────────────────────────
-server.tool(
-  'list_notes',
-  'List all markdown notes in the vault, optionally filtered to a folder',
-  { folder: z.string().optional().describe('Subfolder path relative to vault root') },
-  async ({ folder }) => {
-    const v = requireVault();
-    const notes = await v.listNotes(folder);
-    return {
-      content: [{ type: 'text', text: notes.join('\n') || '(no notes found)' }],
-    };
-  }
-);
+  // ── list_notes ────────────────────────────────────────────────────────────────
+  server.tool(
+    "list_notes",
+    "List all markdown notes in the vault, optionally filtered to a folder",
+    {
+      folder: z
+        .string()
+        .optional()
+        .describe("Subfolder path relative to vault root"),
+    },
+    async ({ folder }) => {
+      const v = requireVault();
+      const notes = await v.listNotes(folder);
+      return {
+        content: [
+          { type: "text", text: notes.join("\n") || "(no notes found)" },
+        ],
+      };
+    },
+  );
 
-// ── read_note ─────────────────────────────────────────────────────────────────
-server.tool(
-  'read_note',
-  'Read the full content and frontmatter of a note',
-  { path: z.string().describe('Path to note relative to vault root, e.g. "Journal/2025-01-01.md"') },
-  async ({ path }) => {
-    const note = await requireVault().readNote(path);
-    const fmStr =
-      Object.keys(note.frontmatter).length > 0
-        ? `---\n${JSON.stringify(note.frontmatter, null, 2)}\n---\n\n`
-        : '';
-    return {
-      content: [{ type: 'text', text: fmStr + note.content }],
-    };
-  }
-);
+  // ── read_note ─────────────────────────────────────────────────────────────────
+  server.tool(
+    "read_note",
+    "Read the full content and frontmatter of a note",
+    {
+      path: z
+        .string()
+        .describe(
+          'Path to note relative to vault root, e.g. "Journal/2025-01-01.md"',
+        ),
+    },
+    async ({ path }) => {
+      const note = await requireVault().readNote(path);
+      const fmStr =
+        Object.keys(note.frontmatter).length > 0
+          ? `---\n${JSON.stringify(note.frontmatter, null, 2)}\n---\n\n`
+          : "";
+      return {
+        content: [{ type: "text", text: fmStr + note.content }],
+      };
+    },
+  );
 
-// ── write_note ────────────────────────────────────────────────────────────────
-// #2: Requires overwrite flag for existing notes
-server.tool(
-  'write_note',
-  'Create a new note or fully replace an existing one. For modifying parts of an existing note, prefer edit_note (search-and-replace) or append_note instead — they are safer because they only touch the targeted text. Set overwrite: true to replace an existing note (a backup is created automatically).',
-  {
-    path: z.string().describe('Path relative to vault root'),
-    content: z.string().describe('Markdown content (excluding frontmatter)'),
-    frontmatter: z
-      .record(z.unknown())
-      .optional()
-      .describe('Optional YAML frontmatter as a JSON object'),
-    overwrite: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe('Must be true to overwrite an existing note. A .bak backup is created automatically.'),
-  },
-  async ({ path, content, frontmatter, overwrite }, extra) => {
-    const result = await requireVault().writeNote(
-      path,
-      content,
-      frontmatter as Record<string, unknown> | undefined,
-      { overwrite }
-    );
-    auditLog(result.created ? 'CREATE' : 'UPDATE', path, extra.sessionId);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: result.created
-            ? `✅ Created: ${result.path}`
-            : `✅ Updated: ${result.path}` + (result.backedUp ? ` (backup: ${result.backupPath})` : ''),
-        },
-      ],
-    };
-  }
-);
-
-// ── upload_attachment ─────────────────────────────────────────────────────────
-server.tool(
-  'upload_attachment',
-  'Upload a binary file (image, PDF, etc.) to the vault from base64-encoded data.',
-  {
-    path: z.string().describe('Path relative to vault root (e.g. "attachments/photo.png")'),
-    data: z.string().describe('Base64-encoded file content'),
-    overwrite: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe('Must be true to overwrite an existing file'),
-  },
-  async ({ path: filePath, data, overwrite }, extra) => {
-    const v = requireVault();
-    const buffer = Buffer.from(data, 'base64');
-    const result = await v.uploadAttachment(filePath, buffer, { overwrite });
-
-    auditLog('UPLOAD', filePath, extra.sessionId);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `✅ Uploaded: ${result.path} (${result.bytes} bytes)`,
-        },
-      ],
-    };
-  }
-);
-
-// ── append_note ───────────────────────────────────────────────────────────────
-server.tool(
-  'append_note',
-  'Append content to the end of an existing note',
-  {
-    path: z.string().describe('Path relative to vault root'),
-    content: z.string().describe('Text to append'),
-  },
-  async ({ path, content }, extra) => {
-    await requireVault().appendNote(path, content);
-    auditLog('APPEND', path, extra.sessionId);
-    return {
-      content: [{ type: 'text', text: `✅ Appended to ${path}` }],
-    };
-  }
-);
-
-// ── edit_note ────────────────────────────────────────────────────────────────
-server.tool(
-  'edit_note',
-  'Search and replace text within a note. To insert new content, include surrounding text in old_text and add the new content in new_text. The old_text must appear exactly once. Backup created automatically.',
-  {
-    path: z.string().describe('Path to note relative to vault root, e.g. "Projects/todo.md"'),
-    old_text: z.string().describe('Exact text to find (must appear exactly once). Include surrounding context to make it unique. For insertions, include the text before and after where you want to insert.'),
-    new_text: z.string().describe('Replacement text. For insertions, include the original surrounding text with the new content added. Use empty string to delete.'),
-  },
-  async ({ path, old_text, new_text }, extra) => {
-    const result = await requireVault().editNote(path, old_text, new_text);
-    auditLog('EDIT', path, extra.sessionId);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `✅ Edited: ${result.path}` + (result.backedUp ? ` (backup: ${result.backupPath})` : ''),
-        },
-      ],
-    };
-  }
-);
-
-// ── delete_note ───────────────────────────────────────────────────────────────
-// #1: Soft-delete to .trash/ instead of hard unlink
-server.tool(
-  'delete_note',
-  'Move a note to .trash/ (soft delete, recoverable). Use permanent: true to hard-delete.',
-  {
-    path: z.string().describe('Path relative to vault root'),
-    permanent: z.boolean().optional().default(false).describe('If true, permanently deletes instead of moving to .trash/'),
-  },
-  async ({ path, permanent }, extra) => {
-    const result = await requireVault().deleteNote(path, { permanent });
-    auditLog(permanent ? 'DELETE-PERMANENT' : 'DELETE-SOFT', path, extra.sessionId);
-    return {
-      content: [{
-        type: 'text',
-        text: permanent
-          ? `🗑️ Permanently deleted: ${path}`
-          : `🗑️ Moved to trash: ${result.trashPath}`,
-      }],
-    };
-  }
-);
-
-// ── search_vault ──────────────────────────────────────────────────────────────
-server.tool(
-  'search_vault',
-  'Search notes by content, tags, or metadata. Results ranked by relevance (filename > frontmatter > headings > body). Use tags/frontmatter filters to narrow results without a text query.',
-  {
-    query: z.string().describe('Search string (searches content AND file paths). Use empty string with tags/frontmatter filters to browse by metadata.'),
-    tags: z.array(z.string()).optional().describe('Filter to notes with ALL these tags (e.g. ["finance", "budget"])'),
-    frontmatter: z.record(z.string()).optional().describe('Filter by frontmatter fields (e.g. {"status": "draft"})'),
-    folder: z.string().optional().describe('Limit search to this folder'),
-    caseSensitive: z.boolean().optional().default(false),
-    maxResults: z.number().optional().default(20),
-  },
-  async ({ query, tags, frontmatter, folder, caseSensitive, maxResults }) => {
-    const results = await requireVault().searchVault(query, { folder, tags, frontmatter, caseSensitive, maxResults });
-    if (results.length === 0) {
-      return { content: [{ type: 'text', text: `No results for "${query}"${tags ? ` tags:[${tags.join(',')}]` : ''}` }] };
-    }
-    const formatted = results
-      .map(r => {
-        const header = `**${r.path}** (score: ${r.score})`;
-        if (r.matches.length === 0) return header;
-        const matchLines = r.matches.map(m => {
-          if (m.context && m.context.length > 0) {
-            return m.context.map(c => {
-              const prefix = c === m.text ? `> L${m.line}:` : `  ...`;
-              return `  ${prefix} ${c}`;
-            }).join('\n');
-          }
-          return `  L${m.line}: ${m.text}`;
-        }).join('\n');
-        return `${header}\n${matchLines}`;
-      })
-      .join('\n\n');
-    return { content: [{ type: 'text', text: formatted }] };
-  }
-);
-
-// ── list_tags ─────────────────────────────────────────────────────────────────
-server.tool(
-  'list_tags',
-  'List all tags used in the vault and which notes use each tag. Useful for discovering what topics exist before searching.',
-  {},
-  async () => {
-    const tags = await requireVault().listTags();
-    const entries = Object.entries(tags);
-    if (entries.length === 0) {
-      return { content: [{ type: 'text', text: 'No tags found.' }] };
-    }
-    const formatted = entries
-      .map(([tag, paths]) => `#${tag} (${paths.length})\n${paths.map(p => `  - ${p}`).join('\n')}`)
-      .join('\n\n');
-    return { content: [{ type: 'text', text: formatted }] };
-  }
-);
-
-// ── get_sync_status ───────────────────────────────────────────────────────────
-server.tool(
-  'get_sync_status',
-  'Check Obsidian Sync status — conflicts, recently modified files, and sync log',
-  {},
-  async () => {
-    const status = await requireVault().getSyncStatus();
-
-    const lines: string[] = [];
-
-    lines.push(`## Vault Stats`);
-    lines.push(`- Notes: ${status.vaultStats.totalNotes}`);
-    lines.push(`- Total files: ${status.vaultStats.totalFiles}`);
-    lines.push('');
-
-    if (status.conflicts.length > 0) {
-      lines.push(`## ⚠️ Conflict Files (${status.conflicts.length})`);
-      status.conflicts.forEach(c => lines.push(`  - ${c}`));
-    } else {
-      lines.push('## ✅ No Conflict Files');
-    }
-    lines.push('');
-
-    if (status.recentlyModified.length > 0) {
-      lines.push(`## Recently Modified (last 15 min)`);
-      status.recentlyModified.forEach(f =>
-        lines.push(`  - ${f.path} — ${new Date(f.modified).toLocaleTimeString()}`)
+  // ── write_note ────────────────────────────────────────────────────────────────
+  // #2: Requires overwrite flag for existing notes
+  server.tool(
+    "write_note",
+    "Create a new note or fully replace an existing one. For modifying parts of an existing note, prefer edit_note (search-and-replace) or append_note instead — they are safer because they only touch the targeted text. Set overwrite: true to replace an existing note (a backup is created automatically).",
+    {
+      path: z.string().describe("Path relative to vault root"),
+      content: z.string().describe("Markdown content (excluding frontmatter)"),
+      frontmatter: z
+        .record(z.unknown())
+        .optional()
+        .describe("Optional YAML frontmatter as a JSON object"),
+      overwrite: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Must be true to overwrite an existing note. A .bak backup is created automatically.",
+        ),
+    },
+    async ({ path, content, frontmatter, overwrite }, extra) => {
+      const result = await requireVault().writeNote(
+        path,
+        content,
+        frontmatter as Record<string, unknown> | undefined,
+        { overwrite },
       );
-    } else {
-      lines.push('## Recently Modified (last 15 min)\n  (none)');
-    }
-    lines.push('');
+      auditLog(result.created ? "CREATE" : "UPDATE", path, extra.sessionId);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.created
+              ? `✅ Created: ${result.path}`
+              : `✅ Updated: ${result.path}` +
+                (result.backedUp ? ` (backup: ${result.backupPath})` : ""),
+          },
+        ],
+      };
+    },
+  );
 
-    if (status.syncLogSnippet) {
-      lines.push(`## Sync Log (${status.syncLogPath})`);
-      lines.push('```');
-      lines.push(status.syncLogSnippet);
-      lines.push('```');
-    } else {
-      lines.push('## Sync Log\n  Not found. Obsidian may not be running or log path differs.');
-    }
+  // ── upload_attachment ─────────────────────────────────────────────────────────
+  server.tool(
+    "upload_attachment",
+    "Upload a binary file (image, PDF, etc.) to the vault from base64-encoded data.",
+    {
+      path: z
+        .string()
+        .describe('Path relative to vault root (e.g. "attachments/photo.png")'),
+      data: z.string().describe("Base64-encoded file content"),
+      overwrite: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Must be true to overwrite an existing file"),
+    },
+    async ({ path: filePath, data, overwrite }, extra) => {
+      const v = requireVault();
+      const buffer = Buffer.from(data, "base64");
+      const result = await v.uploadAttachment(filePath, buffer, { overwrite });
 
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
-);
+      auditLog("UPLOAD", filePath, extra.sessionId);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `✅ Uploaded: ${result.path} (${result.bytes} bytes)`,
+          },
+        ],
+      };
+    },
+  );
 
-return server;
+  // ── append_note ───────────────────────────────────────────────────────────────
+  server.tool(
+    "append_note",
+    "Append content to the end of an existing note",
+    {
+      path: z.string().describe("Path relative to vault root"),
+      content: z.string().describe("Text to append"),
+    },
+    async ({ path, content }, extra) => {
+      await requireVault().appendNote(path, content);
+      auditLog("APPEND", path, extra.sessionId);
+      return {
+        content: [{ type: "text", text: `✅ Appended to ${path}` }],
+      };
+    },
+  );
+
+  // ── edit_note ────────────────────────────────────────────────────────────────
+  server.tool(
+    "edit_note",
+    "Search and replace text within a note. To insert new content, include surrounding text in old_text and add the new content in new_text. The old_text must appear exactly once. Backup created automatically.",
+    {
+      path: z
+        .string()
+        .describe(
+          'Path to note relative to vault root, e.g. "Projects/todo.md"',
+        ),
+      old_text: z
+        .string()
+        .describe(
+          "Exact text to find (must appear exactly once). Include surrounding context to make it unique. For insertions, include the text before and after where you want to insert.",
+        ),
+      new_text: z
+        .string()
+        .describe(
+          "Replacement text. For insertions, include the original surrounding text with the new content added. Use empty string to delete.",
+        ),
+    },
+    async ({ path, old_text, new_text }, extra) => {
+      const result = await requireVault().editNote(path, old_text, new_text);
+      auditLog("EDIT", path, extra.sessionId);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `✅ Edited: ${result.path}` +
+              (result.backedUp ? ` (backup: ${result.backupPath})` : ""),
+          },
+        ],
+      };
+    },
+  );
+
+  // ── delete_note ───────────────────────────────────────────────────────────────
+  // #1: Soft-delete to .trash/ instead of hard unlink
+  server.tool(
+    "delete_note",
+    "Move a note to .trash/ (soft delete, recoverable). Use permanent: true to hard-delete.",
+    {
+      path: z.string().describe("Path relative to vault root"),
+      permanent: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("If true, permanently deletes instead of moving to .trash/"),
+    },
+    async ({ path, permanent }, extra) => {
+      const result = await requireVault().deleteNote(path, { permanent });
+      auditLog(
+        permanent ? "DELETE-PERMANENT" : "DELETE-SOFT",
+        path,
+        extra.sessionId,
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: permanent
+              ? `🗑️ Permanently deleted: ${path}`
+              : `🗑️ Moved to trash: ${result.trashPath}`,
+          },
+        ],
+      };
+    },
+  );
+
+  // ── search_vault ──────────────────────────────────────────────────────────────
+  server.tool(
+    "search_vault",
+    "Search notes by content, tags, or metadata. Results ranked by relevance (filename > frontmatter > headings > body). Use tags/frontmatter filters to narrow results without a text query.",
+    {
+      query: z
+        .string()
+        .describe(
+          "Search string (searches content AND file paths). Use empty string with tags/frontmatter filters to browse by metadata.",
+        ),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Filter to notes with ALL these tags (e.g. ["finance", "budget"])',
+        ),
+      frontmatter: z
+        .record(z.string())
+        .optional()
+        .describe('Filter by frontmatter fields (e.g. {"status": "draft"})'),
+      folder: z.string().optional().describe("Limit search to this folder"),
+      caseSensitive: z.boolean().optional().default(false),
+      maxResults: z.number().optional().default(20),
+    },
+    async ({ query, tags, frontmatter, folder, caseSensitive, maxResults }) => {
+      const results = await requireVault().searchVault(query, {
+        folder,
+        tags,
+        frontmatter,
+        caseSensitive,
+        maxResults,
+      });
+      if (results.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No results for "${query}"${tags ? ` tags:[${tags.join(",")}]` : ""}`,
+            },
+          ],
+        };
+      }
+      const formatted = results
+        .map((r) => {
+          const header = `**${r.path}** (score: ${r.score})`;
+          if (r.matches.length === 0) return header;
+          const matchLines = r.matches
+            .map((m) => {
+              if (m.context && m.context.length > 0) {
+                return m.context
+                  .map((c) => {
+                    const prefix = c === m.text ? `> L${m.line}:` : `  ...`;
+                    return `  ${prefix} ${c}`;
+                  })
+                  .join("\n");
+              }
+              return `  L${m.line}: ${m.text}`;
+            })
+            .join("\n");
+          return `${header}\n${matchLines}`;
+        })
+        .join("\n\n");
+      return { content: [{ type: "text", text: formatted }] };
+    },
+  );
+
+  // ── list_tags ─────────────────────────────────────────────────────────────────
+  server.tool(
+    "list_tags",
+    "List all tags used in the vault and which notes use each tag. Useful for discovering what topics exist before searching.",
+    {},
+    async () => {
+      const tags = await requireVault().listTags();
+      const entries = Object.entries(tags);
+      if (entries.length === 0) {
+        return { content: [{ type: "text", text: "No tags found." }] };
+      }
+      const formatted = entries
+        .map(
+          ([tag, paths]) =>
+            `#${tag} (${paths.length})\n${paths.map((p) => `  - ${p}`).join("\n")}`,
+        )
+        .join("\n\n");
+      return { content: [{ type: "text", text: formatted }] };
+    },
+  );
+
+  // ── get_sync_status ───────────────────────────────────────────────────────────
+  server.tool(
+    "get_sync_status",
+    "Check Obsidian Sync status — conflicts, recently modified files, and sync log",
+    {},
+    async () => {
+      const status = await requireVault().getSyncStatus();
+
+      const lines: string[] = [];
+
+      lines.push(`## Vault Stats`);
+      lines.push(`- Notes: ${status.vaultStats.totalNotes}`);
+      lines.push(`- Total files: ${status.vaultStats.totalFiles}`);
+      lines.push("");
+
+      if (status.conflicts.length > 0) {
+        lines.push(`## ⚠️ Conflict Files (${status.conflicts.length})`);
+        status.conflicts.forEach((c) => lines.push(`  - ${c}`));
+      } else {
+        lines.push("## ✅ No Conflict Files");
+      }
+      lines.push("");
+
+      if (status.recentlyModified.length > 0) {
+        lines.push(`## Recently Modified (last 15 min)`);
+        status.recentlyModified.forEach((f) =>
+          lines.push(
+            `  - ${f.path} — ${new Date(f.modified).toLocaleTimeString()}`,
+          ),
+        );
+      } else {
+        lines.push("## Recently Modified (last 15 min)\n  (none)");
+      }
+      lines.push("");
+
+      if (status.syncLogSnippet) {
+        lines.push(`## Sync Log (${status.syncLogPath})`);
+        lines.push("```");
+        lines.push(status.syncLogSnippet);
+        lines.push("```");
+      } else {
+        lines.push(
+          "## Sync Log\n  Not found. Obsidian may not be running or log path differs.",
+        );
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  return server;
 }
 
 // ─── HTTP / SSE Express Server ─────────────────────────────────────────────────
@@ -464,16 +556,16 @@ const app = express();
 // origins are rejected before auth or rate-limit processing.
 
 const allowedOriginHostnames = new Set([
-  'localhost',
-  '127.0.0.1',
-  '::1',
+  "localhost",
+  "127.0.0.1",
+  "::1",
   ...ALLOWED_ORIGINS,
 ]);
 
 function originCheckMiddleware(
   req: express.Request,
   res: express.Response,
-  next: express.NextFunction
+  next: express.NextFunction,
 ) {
   const origin = req.headers.origin;
   // No Origin header → non-browser client (CLI, MCP SDK, etc.) — allow.
@@ -481,40 +573,40 @@ function originCheckMiddleware(
 
   try {
     const { hostname } = new URL(origin);
-    if (allowedOriginHostnames.has(hostname) || hostname.endsWith('.ts.net')) {
+    if (allowedOriginHostnames.has(hostname) || hostname.endsWith(".ts.net")) {
       return next();
     }
   } catch {
     // Malformed Origin — fall through to reject
   }
 
-  res.status(403).json({ error: 'Forbidden: origin not allowed' });
+  res.status(403).json({ error: "Forbidden: origin not allowed" });
 }
 
 app.use(originCheckMiddleware);
 
 // #6: Body size limit for non-SSE routes
-app.use('/health', express.json({ limit: MAX_BODY_SIZE }));
+app.use("/health", express.json({ limit: MAX_BODY_SIZE }));
 
 // #3: Rate limiting on all authenticated routes
 app.use(rateLimitMiddleware);
 
 // Health check (unauthenticated — useful for uptime monitoring)
-app.get('/health', async (_req, res) => {
+app.get("/health", async (_req, res) => {
   const uptimeMs = Date.now() - startTime;
   const uptimeMin = Math.floor(uptimeMs / 60_000);
   const health: Record<string, unknown> = {
-    status: vaultReady ? 'ok' : 'waiting_for_sync',
-    server: 'obsidian-mcp',
+    status: vaultReady ? "ok" : "waiting_for_sync",
+    server: "obsidian-mcp",
     vaultExists: existsSync(VAULT_PATH!),
     uptime: `${uptimeMin}m`,
   };
 
   if (vaultReady) {
     try {
-      const mdFiles = await glob('**/*.md', {
+      const mdFiles = await glob("**/*.md", {
         cwd: VAULT_PATH!,
-        ignore: ['**/.obsidian/**', '**/.trash/**'],
+        ignore: ["**/.obsidian/**", "**/.trash/**"],
         stat: true,
         withFileTypes: true,
       });
@@ -531,7 +623,7 @@ app.get('/health', async (_req, res) => {
         health.lastModified = new Date(latestMtime).toISOString();
       }
     } catch {
-      health.noteCount = 'unavailable';
+      health.noteCount = "unavailable";
     }
   }
 
@@ -541,14 +633,14 @@ app.get('/health', async (_req, res) => {
 // SSE transport — one connection per client, each with its own McpServer
 const transports: Record<string, SSEServerTransport> = {};
 
-app.get('/sse', authMiddleware, async (req, res) => {
+app.get("/sse", authMiddleware, async (req, res) => {
   console.log(`→ SSE connection from ${req.ip}`);
-  const transport = new SSEServerTransport('/messages', res);
+  const transport = new SSEServerTransport("/messages", res);
   transports[transport.sessionId] = transport;
 
   const sessionServer = createServer();
 
-  res.on('close', () => {
+  res.on("close", () => {
     console.log(`← SSE disconnected: ${transport.sessionId}`);
     delete transports[transport.sessionId];
     sessionServer.close().catch(() => {});
@@ -559,19 +651,22 @@ app.get('/sse', authMiddleware, async (req, res) => {
 
 // NOTE: do NOT use express.json() here — SSEServerTransport.handlePostMessage
 // reads the raw request body stream directly.
-app.post('/messages', authMiddleware, async (req, res) => {
+app.post("/messages", authMiddleware, async (req, res) => {
   const sessionId = req.query.sessionId as string;
   const transport = transports[sessionId];
   if (!transport) {
-    res.status(404).json({ error: 'Session not found' });
+    res.status(404).json({ error: "Session not found" });
     return;
   }
   try {
     await transport.handlePostMessage(req, res);
   } catch (err) {
-    console.error(`[messages] Error handling message for session ${sessionId}:`, (err as Error).message);
+    console.error(
+      `[messages] Error handling message for session ${sessionId}:`,
+      (err as Error).message,
+    );
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal server error' });
+      res.status(500).json({ error: "Internal server error" });
     }
   }
 });
@@ -584,20 +679,24 @@ app.listen(PORT, BIND_ADDRESS, () => {
   console.log(`   Bind     : ${BIND_ADDRESS}`);
   console.log(`   Port     : ${PORT}`);
   console.log(`   Vault    : ${VAULT_PATH}`);
-  console.log(`   Auth     : ${AUTH_TOKEN ? 'Bearer token enabled' : 'None (network-level security only)'}`);
+  console.log(
+    `   Auth     : ${AUTH_TOKEN ? "Bearer token enabled" : "None (network-level security only)"}`,
+  );
   console.log(`   Max body : ${MAX_BODY_SIZE}`);
   console.log(`   SSE URL  : http://${BIND_ADDRESS}:${PORT}/sse`);
-  if (!AUTH_TOKEN && BIND_ADDRESS !== '127.0.0.1') {
-    console.log(`\n⚠️  WARNING: No AUTH_TOKEN set and binding to ${BIND_ADDRESS}.`);
+  if (!AUTH_TOKEN && BIND_ADDRESS !== "127.0.0.1") {
+    console.log(
+      `\n⚠️  WARNING: No AUTH_TOKEN set and binding to ${BIND_ADDRESS}.`,
+    );
     console.log(`   Anyone on your network can read/write your vault!`);
     console.log(`   Set AUTH_TOKEN in .env for security.\n`);
   }
-  console.log('');
+  console.log("");
 
   // Initialize vault after the HTTP server is listening.
   // This ensures /health responds during the sync wait period (important for Fly.io health checks).
-  waitForVault().catch(err => {
-    console.error('❌  Failed to initialize vault:', err);
+  waitForVault().catch((err) => {
+    console.error("❌  Failed to initialize vault:", err);
     process.exit(1);
   });
 });
