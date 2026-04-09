@@ -27,8 +27,9 @@ COPY <<'ENTRYPOINT' /app/start.sh
 #!/bin/bash
 set -e
 
-echo "[init] Logging in to Obsidian Sync..."
-ob login
+echo "[init] Setting up Obsidian Sync credentials..."
+mkdir -p ~/.obsidian-headless
+echo -n "$OBSIDIAN_AUTH_TOKEN" > ~/.obsidian-headless/auth_token
 
 echo "[init] Setting up vault: $VAULT_NAME"
 cd /vault
