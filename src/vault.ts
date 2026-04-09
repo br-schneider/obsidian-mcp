@@ -49,6 +49,7 @@ export interface SyncStatus {
 
 export class ObsidianVault {
   private vaultPath: string;
+  private vaultRealPath: string;
 
   constructor(config: { vaultPath: string }) {
     this.vaultPath = path.resolve(config.vaultPath);
@@ -56,11 +57,27 @@ export class ObsidianVault {
     if (!existsSync(this.vaultPath)) {
       throw new Error(`Vault path does not exist: ${this.vaultPath}`);
     }
+
+    this.vaultRealPath = realpathSync(this.vaultPath);
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
   // #5: Path traversal protection with symlink resolution
+  private findNearestExistingPath(candidatePath: string): string | undefined {
+    let current = candidatePath;
+
+    while (!existsSync(current)) {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return undefined;
+      }
+      current = parent;
+    }
+
+    return current;
+  }
+
   private resolvePath(notePath: string): string {
     const resolved = path.resolve(this.vaultPath, notePath);
 
@@ -75,14 +92,12 @@ export class ObsidianVault {
     // Second check: resolve symlinks and verify the real path is still inside the vault.
     // For existing files, check the file itself. For new files, check the parent directory
     // (a symlinked directory could redirect writes outside the vault).
-    const targetToCheck = existsSync(resolved)
-      ? resolved
-      : path.dirname(resolved);
-    if (existsSync(targetToCheck)) {
+    const targetToCheck = this.findNearestExistingPath(resolved);
+    if (targetToCheck) {
       const realPath = realpathSync(targetToCheck);
       if (
-        !realPath.startsWith(this.vaultPath + path.sep) &&
-        realPath !== this.vaultPath
+        !realPath.startsWith(this.vaultRealPath + path.sep) &&
+        realPath !== this.vaultRealPath
       ) {
         throw new Error(
           `Symlink escape blocked: ${notePath} resolves to ${realPath}`,
@@ -93,10 +108,62 @@ export class ObsidianVault {
     return resolved;
   }
 
+  private assertNotProtectedPath(
+    resolvedPath: string,
+    originalPath: string,
+  ): void {
+    const canonicalBasePath = this.findNearestExistingPath(resolvedPath);
+    const canonicalBase = canonicalBasePath
+      ? path.join(
+          realpathSync(canonicalBasePath),
+          path.relative(canonicalBasePath, resolvedPath),
+        )
+      : resolvedPath;
+
+    const hasProtectedSegment = (basePath: string, candidatePath: string) =>
+      path
+        .relative(basePath, candidatePath)
+        .split(/[\\/]+/)
+        .filter((segment) => segment && segment !== ".")
+        .some((segment) => segment === ".obsidian" || segment === ".trash");
+
+    if (
+      hasProtectedSegment(this.vaultPath, resolvedPath) ||
+      hasProtectedSegment(this.vaultRealPath, canonicalBase)
+    ) {
+      throw new Error(`Access to protected vault path is blocked: ${originalPath}`);
+    }
+  }
+
+  private resolveNotePath(notePath: string): string {
+    const resolved = this.resolvePath(notePath);
+    this.assertNotProtectedPath(resolved, notePath);
+
+    if (path.extname(resolved).toLowerCase() !== ".md") {
+      throw new Error(`Note paths must end in .md: ${notePath}`);
+    }
+
+    return resolved;
+  }
+
+  private resolveAttachmentPath(filePath: string): string {
+    const resolved = this.resolvePath(filePath);
+    this.assertNotProtectedPath(resolved, filePath);
+
+    if (path.extname(resolved).toLowerCase() === ".md") {
+      throw new Error(`Attachment paths cannot end in .md: ${filePath}`);
+    }
+
+    return resolved;
+  }
+
   // ─── Notes ───────────────────────────────────────────────────────────────────
 
   async listNotes(folder?: string): Promise<string[]> {
     const base = folder ? this.resolvePath(folder) : this.vaultPath;
+    if (folder) {
+      this.assertNotProtectedPath(base, folder);
+    }
     const files = await glob("**/*.md", {
       cwd: base,
       ignore: ["**/.obsidian/**", "**/.trash/**"],
@@ -105,7 +172,7 @@ export class ObsidianVault {
   }
 
   async readNote(notePath: string): Promise<NoteResult> {
-    const fullPath = this.resolvePath(notePath);
+    const fullPath = this.resolveNotePath(notePath);
     const rawContent = await fs.readFile(fullPath, "utf-8");
     const { data: frontmatter, content } = matter(rawContent);
     return { path: notePath, content, frontmatter, rawContent };
@@ -118,7 +185,7 @@ export class ObsidianVault {
     frontmatter?: Record<string, unknown>,
     options: { overwrite?: boolean } = {},
   ): Promise<WriteResult> {
-    const fullPath = this.resolvePath(notePath);
+    const fullPath = this.resolveNotePath(notePath);
     const exists = existsSync(fullPath);
 
     // Block overwriting existing notes without explicit flag
@@ -148,7 +215,7 @@ export class ObsidianVault {
   }
 
   async appendNote(notePath: string, content: string): Promise<void> {
-    const fullPath = this.resolvePath(notePath);
+    const fullPath = this.resolveNotePath(notePath);
     if (!existsSync(fullPath)) {
       throw new Error(`Note not found: ${notePath}`);
     }
@@ -161,7 +228,7 @@ export class ObsidianVault {
     oldText: string,
     newText: string,
   ): Promise<EditResult> {
-    const fullPath = this.resolvePath(notePath);
+    const fullPath = this.resolveNotePath(notePath);
 
     if (!existsSync(fullPath)) {
       throw new Error(`Note not found: ${notePath}`);
@@ -208,7 +275,7 @@ export class ObsidianVault {
     notePath: string,
     options: { permanent?: boolean } = {},
   ): Promise<DeleteResult> {
-    const fullPath = this.resolvePath(notePath);
+    const fullPath = this.resolveNotePath(notePath);
 
     if (!existsSync(fullPath)) {
       throw new Error(`Note not found: ${notePath}`);
@@ -240,7 +307,7 @@ export class ObsidianVault {
     data: Buffer,
     options: { overwrite?: boolean } = {},
   ): Promise<{ path: string; bytes: number }> {
-    const resolved = this.resolvePath(filePath);
+    const resolved = this.resolveAttachmentPath(filePath);
 
     if (existsSync(resolved) && !options.overwrite) {
       throw new Error(
@@ -455,19 +522,21 @@ export class ObsidianVault {
 
     recentlyModified.sort((a, b) => b.modified.localeCompare(a.modified));
 
-    // 3. Try to read Obsidian's sync log (macOS path)
-    // #10: Log content is displayed but is low-risk (no user-supplied data injection)
+    // 3. Try to read a sync log from inside the vault. Reading host-level
+    // Obsidian app logs is opt-in because it expands the trust boundary.
     let syncLogSnippet: string | undefined;
     let syncLogPath: string | undefined;
 
-    const candidateLogs = [
-      path.join(
-        os.homedir(),
-        "Library/Application Support/obsidian/obsidian.log",
-      ),
-      path.join(os.homedir(), "Library/Logs/obsidian/obsidian.log"),
-      path.join(this.vaultPath, ".obsidian", "sync-log.txt"),
-    ];
+    const candidateLogs = [path.join(this.vaultPath, ".obsidian", "sync-log.txt")];
+    if (process.env.ALLOW_HOST_OBSIDIAN_LOG_READS === "true") {
+      candidateLogs.push(
+        path.join(
+          os.homedir(),
+          "Library/Application Support/obsidian/obsidian.log",
+        ),
+        path.join(os.homedir(), "Library/Logs/obsidian/obsidian.log"),
+      );
+    }
 
     for (const logPath of candidateLogs) {
       if (existsSync(logPath)) {

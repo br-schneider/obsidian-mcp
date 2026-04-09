@@ -31,7 +31,9 @@ import { ObsidianVault } from "./vault.js";
 const VAULT_PATH = process.env.VAULT_PATH;
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
 const BIND_ADDRESS = process.env.BIND_ADDRESS ?? "127.0.0.1"; // #7: default to loopback
-const AUTH_TOKEN = process.env.AUTH_TOKEN; // optional bearer token
+const AUTH_TOKEN = process.env.AUTH_TOKEN?.trim(); // optional bearer token
+const ALLOW_UNAUTHENTICATED_NON_LOOPBACK =
+  process.env.ALLOW_UNAUTHENTICATED_NON_LOOPBACK === "true";
 const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? "1mb"; // #6: request size limit
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",")
@@ -42,6 +44,26 @@ const SYNC_WAIT_TIMEOUT = parseInt(process.env.SYNC_WAIT_TIMEOUT ?? "300", 10); 
 
 if (!VAULT_PATH) {
   console.error("❌  VAULT_PATH env var is required");
+  process.exit(1);
+}
+
+function isLoopbackBindAddress(address: string): boolean {
+  const normalized = address.trim().toLowerCase();
+  return (
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "localhost"
+  );
+}
+
+if (
+  !AUTH_TOKEN &&
+  !isLoopbackBindAddress(BIND_ADDRESS) &&
+  !ALLOW_UNAUTHENTICATED_NON_LOOPBACK
+) {
+  console.error(
+    "❌  AUTH_TOKEN is required when binding to a non-loopback address. Set ALLOW_UNAUTHENTICATED_NON_LOOPBACK=true only if you intentionally rely on network-level access controls.",
+  );
   process.exit(1);
 }
 
@@ -116,12 +138,8 @@ async function waitForVault(): Promise<void> {
 
 // ─── Auth Middleware ───────────────────────────────────────────────────────────
 
-function authMiddleware(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-) {
-  if (!AUTH_TOKEN) return next(); // no auth configured → open (rely on network-level security)
+function isAuthorizedRequest(req: express.Request): boolean {
+  if (!AUTH_TOKEN) return true; // startup guards against unsafe non-loopback binds
   const header = req.headers.authorization ?? "";
   const expected = `Bearer ${AUTH_TOKEN}`;
   // Use timing-safe comparison to prevent token recovery via response-time analysis
@@ -131,8 +149,17 @@ function authMiddleware(
     headerBuf.length === expectedBuf.length &&
     timingSafeEqual(headerBuf, expectedBuf)
   ) {
-    return next();
+    return true;
   }
+  return false;
+}
+
+function authMiddleware(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (isAuthorizedRequest(req)) return next();
   res.status(401).json({ error: "Unauthorized" });
 }
 
@@ -591,16 +618,24 @@ app.use("/health", express.json({ limit: MAX_BODY_SIZE }));
 // #3: Rate limiting on all authenticated routes
 app.use(rateLimitMiddleware);
 
-// Health check (unauthenticated — useful for uptime monitoring)
-app.get("/health", async (_req, res) => {
-  const uptimeMs = Date.now() - startTime;
-  const uptimeMin = Math.floor(uptimeMs / 60_000);
+// Health check stays unauthenticated for platform probes, but detailed vault
+// metadata is only returned to authorized callers.
+app.get("/health", async (req, res) => {
+  const includeDetails = isAuthorizedRequest(req);
   const health: Record<string, unknown> = {
     status: vaultReady ? "ok" : "waiting_for_sync",
     server: "obsidian-mcp",
-    vaultExists: existsSync(VAULT_PATH!),
-    uptime: `${uptimeMin}m`,
   };
+
+  if (!includeDetails) {
+    res.json(health);
+    return;
+  }
+
+  const uptimeMs = Date.now() - startTime;
+  const uptimeMin = Math.floor(uptimeMs / 60_000);
+  health.vaultExists = existsSync(VAULT_PATH!);
+  health.uptime = `${uptimeMin}m`;
 
   if (vaultReady) {
     try {
@@ -675,22 +710,19 @@ app.post("/messages", authMiddleware, async (req, res) => {
 
 // #7: Bind to loopback by default. Set BIND_ADDRESS=0.0.0.0 to expose externally.
 app.listen(PORT, BIND_ADDRESS, () => {
+  const authStatus = AUTH_TOKEN
+    ? "Bearer token enabled"
+    : ALLOW_UNAUTHENTICATED_NON_LOOPBACK
+      ? "None (explicitly allowed on non-loopback)"
+      : "None (loopback-only mode)";
+
   console.log(`\n🟢  obsidian-mcp running`);
   console.log(`   Bind     : ${BIND_ADDRESS}`);
   console.log(`   Port     : ${PORT}`);
   console.log(`   Vault    : ${VAULT_PATH}`);
-  console.log(
-    `   Auth     : ${AUTH_TOKEN ? "Bearer token enabled" : "None (network-level security only)"}`,
-  );
+  console.log(`   Auth     : ${authStatus}`);
   console.log(`   Max body : ${MAX_BODY_SIZE}`);
   console.log(`   SSE URL  : http://${BIND_ADDRESS}:${PORT}/sse`);
-  if (!AUTH_TOKEN && BIND_ADDRESS !== "127.0.0.1") {
-    console.log(
-      `\n⚠️  WARNING: No AUTH_TOKEN set and binding to ${BIND_ADDRESS}.`,
-    );
-    console.log(`   Anyone on your network can read/write your vault!`);
-    console.log(`   Set AUTH_TOKEN in .env for security.\n`);
-  }
   console.log("");
 
   // Initialize vault after the HTTP server is listening.

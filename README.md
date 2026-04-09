@@ -38,7 +38,8 @@ Edit `.env`:
 VAULT_PATH=/Users/yourname/Documents/MyVault
 PORT=3456
 DAILY_NOTE_FOLDER=Journal
-AUTH_TOKEN=               # set this if exposing beyond localhost
+AUTH_TOKEN=               # required for public/non-loopback binds by default
+# ALLOW_UNAUTHENTICATED_NON_LOOPBACK=true   # only if you intentionally trust the network
 ```
 
 Run:
@@ -60,7 +61,7 @@ For remote access from your local machine, use Tailscale or ngrok — see [SETUP
 
 ```bash
 docker run --rm -it --entrypoint get-token \
-  ghcr.io/belphemur/obsidian-headless-sync-docker:latest
+  ghcr.io/belphemur/obsidian-headless-sync-docker:v0.0.8
 ```
 
 This prompts for your Obsidian email, password, and MFA code. Save the token it prints.
@@ -81,7 +82,7 @@ VAULT_PASSWORD=                       # only if you use E2E encryption
 DEVICE_NAME=obsidian-mcp-cloud
 
 # MCP server
-AUTH_TOKEN=<generate a strong token>  # REQUIRED for cloud deploys
+AUTH_TOKEN=<generate a strong token>  # REQUIRED for cloud/public deploys
 PORT=3456
 DAILY_NOTE_FOLDER=Journal
 ```
@@ -160,7 +161,9 @@ This is the same sync mechanism Obsidian uses — version history is preserved, 
 ## Security
 
 - **Path traversal protection** — all file operations are sandboxed to the vault directory
-- **Bearer token auth** — set `AUTH_TOKEN` in `.env` (required for cloud deploys)
+- **Protected vault internals** — note tools only operate on `.md` files and reject `.obsidian` / `.trash` paths
+- **Bearer token auth** — public/non-loopback binds require `AUTH_TOKEN` unless you explicitly opt out with `ALLOW_UNAUTHENTICATED_NON_LOOPBACK=true`
+- **Vault-local sync status by default** — `get_sync_status` only reads logs inside the vault unless `ALLOW_HOST_OBSIDIAN_LOG_READS=true`
 - **Obsidian Sync E2E encryption** — supported via `VAULT_PASSWORD`
 
 ## Requirements

@@ -10,7 +10,7 @@
 #   4. fly deploy --dockerfile Dockerfile.fly
 #
 # Get your Obsidian auth token:
-#   docker run --rm -it --entrypoint get-token ghcr.io/belphemur/obsidian-headless-sync-docker:latest
+#   docker run --rm -it --entrypoint get-token ghcr.io/belphemur/obsidian-headless-sync-docker:v0.0.8
 #
 # Cost: ~$3-5/month (shared-cpu-1x, 256MB RAM, 1GB volume)
 

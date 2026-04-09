@@ -6,7 +6,7 @@
 
 services:
   sync:
-    image: ghcr.io/belphemur/obsidian-headless-sync-docker:latest
+    image: ghcr.io/belphemur/obsidian-headless-sync-docker:v0.0.8
     environment:
       OBSIDIAN_AUTH_TOKEN: ${OBSIDIAN_AUTH_TOKEN}
       VAULT_NAME: ${VAULT_NAME}

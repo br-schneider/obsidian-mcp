@@ -36,7 +36,8 @@ Edit `.env`:
 VAULT_PATH=/Users/yourname/Documents/MyVault   # absolute path to vault
 PORT=3456
 DAILY_NOTE_FOLDER=Journal                        # or Daily, or wherever yours live
-AUTH_TOKEN=                                      # optional, leave blank for Tailscale-only auth
+AUTH_TOKEN=                                      # recommended for any remote access
+# ALLOW_UNAUTHENTICATED_NON_LOOPBACK=true        # only if you intentionally trust your tailnet/VPN
 ```
 
 Test it locally first:
@@ -72,7 +73,9 @@ https://abc123.ngrok-free.app/sse
 
 For a stable URL (survives restarts), use a paid ngrok plan with a custom domain, or use Tailscale instead.
 
-### Option B: Tailscale (private network, no auth token needed)
+### Option B: Tailscale (private network)
+
+By default the server now requires `AUTH_TOKEN` for non-loopback binds. If you intentionally want a Tailscale-only deployment without bearer-token auth, set `ALLOW_UNAUTHENTICATED_NON_LOOPBACK=true` and rely on tailnet access controls.
 
 ### Install Tailscale as a system service (not the GUI app)
 

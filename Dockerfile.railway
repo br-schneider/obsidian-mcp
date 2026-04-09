@@ -11,7 +11,7 @@ RUN npm run build
 FROM node:22-slim
 
 # Install obsidian-headless CLI
-RUN npm install -g obsidian-headless && npm cache clean --force
+RUN npm install -g obsidian-headless@0.0.8 && npm cache clean --force
 
 # Copy built MCP server
 WORKDIR /app
