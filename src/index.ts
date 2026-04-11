@@ -223,15 +223,19 @@ function requireVault(): ObsidianVault {
 }
 
 function createServer(): McpServer {
-  const server = new McpServer({
-    name: "obsidian-mcp",
-    version: "1.0.0",
-    instructions:
-      "When modifying existing notes, ALWAYS use edit_note for targeted changes (adding a section, updating a paragraph, fixing a detail). " +
-      "Only use write_note when creating brand-new notes or when the user explicitly asks you to rewrite an entire file from scratch. " +
-      "Using write_note to overwrite an existing note risks losing content, formatting, and specific examples that the user carefully curated. " +
-      "When the user says 'take notes on this' or 'update my style guide,' that means append or edit, not rewrite.",
-  });
+  const server = new McpServer(
+    {
+      name: "obsidian-mcp",
+      version: "1.0.0",
+    },
+    {
+      instructions:
+        "When modifying existing notes, ALWAYS use edit_note for targeted changes (adding a section, updating a paragraph, fixing a detail). " +
+        "Only use write_note when creating brand-new notes or when the user explicitly asks you to rewrite an entire file from scratch. " +
+        "Using write_note to overwrite an existing note risks losing content, formatting, and specific examples that the user carefully curated. " +
+        "When the user says 'take notes on this' or 'update my style guide,' that means append or edit, not rewrite.",
+    },
+  );
 
   // ── list_notes ────────────────────────────────────────────────────────────────
   server.tool(
