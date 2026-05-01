@@ -18,9 +18,15 @@ RUN groupadd --system --gid 10001 obsidian \
     && useradd --system --uid 10001 --gid obsidian --create-home --home-dir /home/obsidian --shell /usr/sbin/nologin obsidian
 
 # Install obsidian-headless CLI
-ENV PNPM_HOME=/usr/local/pnpm
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && pnpm add -g obsidian-headless@0.0.8 && pnpm store prune
+# global-bin-dir=/usr/local/bin so the `ob` binary lands on the default
+# login-shell PATH (start.sh runs commands via `bash -lc`).
+# --allow-build=better-sqlite3 lets prebuild-install drop the prebuilt
+# native binary; without it, sync-setup fails at runtime.
+ENV PNPM_HOME=/usr/local/share/pnpm
+RUN corepack enable && \
+    pnpm config set global-bin-dir /usr/local/bin && \
+    pnpm add -g --allow-build=better-sqlite3 obsidian-headless@0.0.8 && \
+    pnpm store prune
 
 # Copy built MCP server
 WORKDIR /app

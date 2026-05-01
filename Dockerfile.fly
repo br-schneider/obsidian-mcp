@@ -30,9 +30,12 @@ RUN curl -fsSL -o /tmp/s6-overlay-noarch.tar.xz \
     rm /tmp/s6-overlay-*.tar.xz
 
 # Install obsidian-headless CLI
-ENV PNPM_HOME=/usr/local/pnpm
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && pnpm add -g obsidian-headless@0.0.8 && pnpm store prune
+# See Dockerfile.railway for rationale on global-bin-dir + --allow-build.
+ENV PNPM_HOME=/usr/local/share/pnpm
+RUN corepack enable && \
+    pnpm config set global-bin-dir /usr/local/bin && \
+    pnpm add -g --allow-build=better-sqlite3 obsidian-headless@0.0.8 && \
+    pnpm store prune
 
 # Copy built MCP server
 WORKDIR /app
