@@ -8,7 +8,7 @@ obsidian-mcp reads and writes your vault's markdown files directly on disk. It e
 
 **Two ways to run it:**
 
-1. **Local mode** — on the same machine as your vault. Zero setup beyond `npm start`.
+1. **Local mode** — on the same machine as your vault. Zero setup beyond `pnpm start`.
 2. **Cloud mode** — on a VPS or Fly.io, paired with [Obsidian Headless Sync](https://github.com/Belphemur/obsidian-headless-sync-docker). Your vault stays synced via Obsidian Sync, and the server is always on — even when your Mac is asleep.
 
 ```
@@ -28,7 +28,7 @@ AI Agent (MCP client)
 ```bash
 git clone https://github.com/meimakes/obsidian-mcp.git
 cd obsidian-mcp
-npm install && npm run build
+pnpm install && pnpm run build
 cp .env.example .env
 ```
 
@@ -45,7 +45,7 @@ AUTH_TOKEN=               # required for public/non-loopback binds by default
 Run:
 
 ```bash
-npm start
+pnpm start
 curl http://localhost:3456/health
 ```
 
@@ -169,6 +169,7 @@ This is the same sync mechanism Obsidian uses — version history is preserved, 
 ## Requirements
 
 - Node.js 20+ (local mode)
+- pnpm (enable via `corepack enable` — Node ships with corepack)
 - Docker (cloud mode)
 - Obsidian Sync subscription (cloud mode only)
 

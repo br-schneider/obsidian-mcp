@@ -4,10 +4,11 @@
 
 FROM node:20-slim AS builder
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY . .
-RUN npm run build
+RUN pnpm run build
 
 FROM node:20-slim
 
@@ -29,7 +30,9 @@ RUN curl -fsSL -o /tmp/s6-overlay-noarch.tar.xz \
     rm /tmp/s6-overlay-*.tar.xz
 
 # Install obsidian-headless CLI
-RUN npm install -g obsidian-headless@0.0.8 && npm cache clean --force
+ENV PNPM_HOME=/usr/local/pnpm
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && pnpm add -g obsidian-headless@0.0.8 && pnpm store prune
 
 # Copy built MCP server
 WORKDIR /app

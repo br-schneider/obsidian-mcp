@@ -18,6 +18,7 @@
     "zod": "^3.23.8"
   },
   "license": "MIT",
+  "packageManager": "pnpm@10.33.2",
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.0",

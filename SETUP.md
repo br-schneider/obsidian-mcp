@@ -18,8 +18,8 @@ No plugins. No Obsidian needing to be open. Just a Node process reading your mar
 
 ```bash
 cd obsidian-mcp
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 ---
@@ -43,7 +43,7 @@ AUTH_TOKEN=                                      # recommended for any remote ac
 Test it locally first:
 
 ```bash
-npm start
+pnpm start
 # → open http://localhost:3456/health in browser, should return {"status":"ok",...}
 ```
 
@@ -115,7 +115,7 @@ curl http://your-mac.tailnet-name.ts.net:3456/health
 pm2 keeps the process running after restarts.
 
 ```bash
-npm install -g pm2
+pnpm add -g pm2
 
 # Start the server
 pm2 start dist/index.js --name obsidian-mcp --env production
@@ -193,6 +193,6 @@ The log approach works best when Obsidian is actually running. If you need more 
 ## Updating
 
 ```bash
-npm run build
+pnpm run build
 pm2 restart obsidian-mcp
 ```
