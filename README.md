@@ -142,20 +142,22 @@ When an AI agent writes a note via obsidian-mcp:
 
 This is the same sync mechanism Obsidian uses — version history is preserved, conflicts are handled automatically.
 
-## Tools (10)
+## Tools (13)
 
 | Tool | What it does |
 |------|-------------|
 | `list_notes` | List all markdown files, optionally filtered by folder |
 | `read_note` | Read a note's content and frontmatter |
 | `write_note` | Create or overwrite a note (auto-backup on overwrite) |
+| `upload_attachment` | Upload a binary file (image, PDF, etc.) from base64 data |
 | `append_note` | Append text to an existing note |
 | `edit_note` | Find and replace a unique text string within a note (auto-backup) |
+| `move_note` | Move or rename a note, creating destination folders as needed (auto-backup on overwrite) |
+| `set_frontmatter` | Atomically set a single frontmatter field, preserving the rest (auto-backup) |
+| `delete_frontmatter` | Remove a single frontmatter field from a note (auto-backup) |
 | `search_vault` | BM25-ranked full-text search with fuzzy matching, prefix matching, and Obsidian-style operators (`tag:`, `path:`, `file:`, `"exact"`, `-exclude`) |
 | `find_backlinks` | List notes that link to a given note via `[[wikilinks]]` |
 | `list_tags` | List all tags and which notes use them |
-| `get_daily_note` | Get today's or a specific date's daily note |
-| `create_daily_note` | Create a daily note from a template |
 | `get_sync_status` | Check for sync conflicts, recently modified files |
 
 ## Security

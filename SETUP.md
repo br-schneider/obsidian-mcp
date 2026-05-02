@@ -168,11 +168,15 @@ Authorization: Bearer your_token_here
 | `list_notes` | List all notes (optional folder filter) |
 | `read_note` | Read note content + frontmatter |
 | `write_note` | Create or overwrite a note |
+| `upload_attachment` | Upload a binary file from base64 data |
 | `append_note` | Append to an existing note |
-| `search_vault` | Full-text search across vault |
+| `edit_note` | Search-and-replace on a unique text span |
+| `move_note` | Move or rename a note |
+| `set_frontmatter` | Atomically set a frontmatter field |
+| `delete_frontmatter` | Remove a frontmatter field |
+| `search_vault` | BM25 full-text search with operators and fuzzy matching |
+| `find_backlinks` | Notes that link to a given note |
 | `list_tags` | All tags + which notes use them |
-| `get_daily_note` | Today's (or a specific date's) daily note |
-| `create_daily_note` | Create daily note from template |
 | `get_sync_status` | Conflict files, recent changes, sync log |
 
 ---

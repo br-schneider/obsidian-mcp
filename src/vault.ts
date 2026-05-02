@@ -33,6 +33,14 @@ export interface EditResult {
   backupPath?: string;
 }
 
+export interface MoveResult {
+  fromPath: string;
+  toPath: string;
+  overwroteDestination: boolean;
+  backedUp: boolean;
+  backupPath?: string;
+}
+
 export interface SyncStatus {
   conflicts: string[];
   recentlyModified: Array<{ path: string; modified: string }>;
@@ -265,6 +273,110 @@ export class ObsidianVault {
 
     const updatedContent = rawContent.replace(oldText, newText);
     await fs.writeFile(fullPath, updatedContent, "utf-8");
+    this.searchIndex.invalidateNote(notePath);
+
+    return { path: notePath, backedUp: true, backupPath };
+  }
+
+  async moveNote(
+    fromPath: string,
+    toPath: string,
+    options: { overwrite?: boolean } = {},
+  ): Promise<MoveResult> {
+    const fromResolved = this.resolveNotePath(fromPath);
+    const toResolved = this.resolveNotePath(toPath);
+
+    if (!existsSync(fromResolved)) {
+      throw new Error(`Note not found: ${fromPath}`);
+    }
+
+    if (fromResolved === toResolved) {
+      throw new Error(`Source and destination are the same: ${fromPath}`);
+    }
+
+    const destinationExists = existsSync(toResolved);
+    if (destinationExists && !options.overwrite) {
+      throw new Error(
+        `Destination already exists: ${toPath}. Set overwrite: true to replace (a backup of the destination will be created).`,
+      );
+    }
+
+    let backedUp = false;
+    let backupPath: string | undefined;
+
+    if (destinationExists && options.overwrite) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      backupPath = `${toPath}.${timestamp}.bak`;
+      const fullBackupPath = path.resolve(this.vaultPath, backupPath);
+      await fs.copyFile(toResolved, fullBackupPath);
+      backedUp = true;
+    }
+
+    await fs.mkdir(path.dirname(toResolved), { recursive: true });
+    await fs.rename(fromResolved, toResolved);
+
+    this.searchIndex.invalidateNote(fromPath);
+    this.searchIndex.invalidateNote(toPath);
+
+    return {
+      fromPath,
+      toPath,
+      overwroteDestination: destinationExists,
+      backedUp,
+      backupPath,
+    };
+  }
+
+  async setFrontmatter(
+    notePath: string,
+    key: string,
+    value: unknown,
+  ): Promise<EditResult> {
+    return this.mutateFrontmatter(notePath, (fm) => {
+      fm[key] = value;
+    });
+  }
+
+  async deleteFrontmatter(
+    notePath: string,
+    key: string,
+  ): Promise<EditResult> {
+    return this.mutateFrontmatter(notePath, (fm) => {
+      if (!(key in fm)) {
+        throw new Error(
+          `Frontmatter key "${key}" not found in ${notePath}.`,
+        );
+      }
+      delete fm[key];
+    });
+  }
+
+  private async mutateFrontmatter(
+    notePath: string,
+    mutate: (fm: Record<string, unknown>) => void,
+  ): Promise<EditResult> {
+    const fullPath = this.resolveNotePath(notePath);
+
+    if (!existsSync(fullPath)) {
+      throw new Error(`Note not found: ${notePath}`);
+    }
+
+    const rawContent = await fs.readFile(fullPath, "utf-8");
+    const parsed = matter(rawContent);
+    const fm = { ...(parsed.data as Record<string, unknown>) };
+
+    mutate(fm);
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = `${notePath}.${timestamp}.bak`;
+    const fullBackupPath = path.resolve(this.vaultPath, backupPath);
+    await fs.copyFile(fullPath, fullBackupPath);
+
+    const output =
+      Object.keys(fm).length === 0
+        ? parsed.content.replace(/^\n+/, "")
+        : matter.stringify(parsed.content, fm as Record<string, string>);
+    await fs.writeFile(fullPath, output, "utf-8");
     this.searchIndex.invalidateNote(notePath);
 
     return { path: notePath, backedUp: true, backupPath };

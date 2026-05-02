@@ -379,6 +379,97 @@ function createServer(): McpServer {
   );
 
   server.tool(
+    "move_note",
+    "Move or rename a note. Creates the destination folder if needed. Refuses to overwrite an existing destination unless overwrite: true (in which case the destination is backed up first).",
+    {
+      from: z.string().describe("Current path relative to vault root"),
+      to: z
+        .string()
+        .describe(
+          "New path relative to vault root. May be in a different folder; intermediate directories are created.",
+        ),
+      overwrite: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Must be true to overwrite an existing note at the destination. The destination file is backed up automatically.",
+        ),
+    },
+    async ({ from, to, overwrite }, extra) => {
+      const result = await requireVault().moveNote(from, to, { overwrite });
+      auditLog("MOVE", `${from} → ${to}`, extra.sessionId);
+      const suffix = result.backedUp
+        ? ` (destination backup: ${result.backupPath})`
+        : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `✅ Moved: ${result.fromPath} → ${result.toPath}${suffix}`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "set_frontmatter",
+    "Atomically set a single frontmatter field on a note. Preserves all other frontmatter and the body verbatim. Backup created automatically. For multi-key updates, call repeatedly.",
+    {
+      path: z.string().describe("Path to note relative to vault root"),
+      key: z
+        .string()
+        .describe('Frontmatter field name (e.g. "status", "tags", "due")'),
+      value: z
+        .union([
+          z.string(),
+          z.number(),
+          z.boolean(),
+          z.array(z.unknown()),
+          z.record(z.unknown()),
+          z.null(),
+        ])
+        .describe(
+          'YAML-compatible value. Strings, numbers, booleans, arrays (e.g. ["draft", "review"]), or objects.',
+        ),
+    },
+    async ({ path, key, value }, extra) => {
+      const result = await requireVault().setFrontmatter(path, key, value);
+      auditLog("FRONTMATTER-SET", `${path}#${key}`, extra.sessionId);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `✅ Set ${key} on ${result.path} (backup: ${result.backupPath})`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "delete_frontmatter",
+    "Remove a single frontmatter field from a note. Errors if the key is not present. Backup created automatically.",
+    {
+      path: z.string().describe("Path to note relative to vault root"),
+      key: z.string().describe("Frontmatter field name to remove"),
+    },
+    async ({ path, key }, extra) => {
+      const result = await requireVault().deleteFrontmatter(path, key);
+      auditLog("FRONTMATTER-DELETE", `${path}#${key}`, extra.sessionId);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `✅ Removed ${key} from ${result.path} (backup: ${result.backupPath})`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
     "search_vault",
     "Full-text search ranked by BM25 with fuzzy matching, prefix matching, and field boosting (title > tags > headings > path > body). Supports Obsidian-style operators inside `query`: `tag:foo` (filter to notes tagged foo, frontmatter or inline #foo), `path:bar` (path contains bar), `file:baz` (filename contains baz), `\"exact phrase\"` (must contain phrase verbatim), `-term` (exclude notes containing term). Operators combine with the structured `tags`/`frontmatter`/`folder` args (all applied additively). Pass an empty `query` with filters set to browse by metadata.",
     {
