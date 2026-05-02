@@ -33,11 +33,6 @@ export interface EditResult {
   backupPath?: string;
 }
 
-export interface DeleteResult {
-  path: string;
-  trashPath?: string;
-}
-
 export interface SyncStatus {
   conflicts: string[];
   recentlyModified: Array<{ path: string; modified: string }>;
@@ -273,38 +268,6 @@ export class ObsidianVault {
     this.searchIndex.invalidateNote(notePath);
 
     return { path: notePath, backedUp: true, backupPath };
-  }
-
-  // #1: Soft-delete to .trash/ by default
-  async deleteNote(
-    notePath: string,
-    options: { permanent?: boolean } = {},
-  ): Promise<DeleteResult> {
-    const fullPath = this.resolveNotePath(notePath);
-
-    if (!existsSync(fullPath)) {
-      throw new Error(`Note not found: ${notePath}`);
-    }
-
-    if (options.permanent) {
-      await fs.unlink(fullPath);
-      this.searchIndex.invalidateNote(notePath);
-      return { path: notePath };
-    }
-
-    // Soft delete: move to .trash/ (Obsidian convention)
-    const trashDir = path.join(this.vaultPath, ".trash");
-    await fs.mkdir(trashDir, { recursive: true });
-
-    const basename = path.basename(notePath);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const trashName = `${basename.replace(".md", "")}.${timestamp}.md`;
-    const trashFullPath = path.join(trashDir, trashName);
-
-    await fs.rename(fullPath, trashFullPath);
-    this.searchIndex.invalidateNote(notePath);
-    const trashRelPath = path.relative(this.vaultPath, trashFullPath);
-    return { path: notePath, trashPath: trashRelPath };
   }
 
   // ─── Attachments ─────────────────────────────────────────────────────────────

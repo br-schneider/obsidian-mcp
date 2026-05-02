@@ -379,37 +379,6 @@ function createServer(): McpServer {
   );
 
   server.tool(
-    "delete_note",
-    "Move a note to .trash/ (soft delete, recoverable). Use permanent: true to hard-delete.",
-    {
-      path: z.string().describe("Path relative to vault root"),
-      permanent: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe("If true, permanently deletes instead of moving to .trash/"),
-    },
-    async ({ path, permanent }, extra) => {
-      const result = await requireVault().deleteNote(path, { permanent });
-      auditLog(
-        permanent ? "DELETE-PERMANENT" : "DELETE-SOFT",
-        path,
-        extra.sessionId,
-      );
-      return {
-        content: [
-          {
-            type: "text",
-            text: permanent
-              ? `🗑️ Permanently deleted: ${path}`
-              : `🗑️ Moved to trash: ${result.trashPath}`,
-          },
-        ],
-      };
-    },
-  );
-
-  server.tool(
     "search_vault",
     "Full-text search ranked by BM25 with fuzzy matching, prefix matching, and field boosting (title > tags > headings > path > body). Supports Obsidian-style operators inside `query`: `tag:foo` (filter to notes tagged foo, frontmatter or inline #foo), `path:bar` (path contains bar), `file:baz` (filename contains baz), `\"exact phrase\"` (must contain phrase verbatim), `-term` (exclude notes containing term). Operators combine with the structured `tags`/`frontmatter`/`folder` args (all applied additively). Pass an empty `query` with filters set to browse by metadata.",
     {

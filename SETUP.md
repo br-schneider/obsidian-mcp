@@ -169,7 +169,6 @@ Authorization: Bearer your_token_here
 | `read_note` | Read note content + frontmatter |
 | `write_note` | Create or overwrite a note |
 | `append_note` | Append to an existing note |
-| `delete_note` | Permanently delete a note |
 | `search_vault` | Full-text search across vault |
 | `list_tags` | All tags + which notes use them |
 | `get_daily_note` | Today's (or a specific date's) daily note |
