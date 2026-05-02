@@ -1,11 +1,12 @@
 import "dotenv/config";
 import express from "express";
 import { timingSafeEqual } from "crypto";
-
-// ─── Crash Protection ────────────────────────────────────────────────────────
-// Log unhandled errors and exit. The process manager (pm2, Docker, s6) should
-// handle restarts. Continuing after an uncaught exception risks running in an
-// undefined state which could compromise security invariants.
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { z } from "zod";
+import { existsSync } from "fs";
+import { glob } from "glob";
+import { ObsidianVault } from "./vault.js";
 
 process.on("uncaughtException", (err) => {
   console.error(`[crash-guard] Uncaught exception: ${err.message}`);
@@ -17,30 +18,20 @@ process.on("unhandledRejection", (reason) => {
   console.error(`[crash-guard] Unhandled rejection:`, reason);
   process.exit(1);
 });
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { z } from "zod";
-import { existsSync } from "fs";
-import { glob } from "glob";
-import * as fs from "fs/promises";
-import * as path from "path";
-import { ObsidianVault } from "./vault.js";
-
-// ─── Config ───────────────────────────────────────────────────────────────────
 
 const VAULT_PATH = process.env.VAULT_PATH;
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
-const BIND_ADDRESS = process.env.BIND_ADDRESS ?? "127.0.0.1"; // #7: default to loopback
-const AUTH_TOKEN = process.env.AUTH_TOKEN?.trim(); // optional bearer token
+const BIND_ADDRESS = process.env.BIND_ADDRESS ?? "127.0.0.1";
+const AUTH_TOKEN = process.env.AUTH_TOKEN?.trim();
 const ALLOW_UNAUTHENTICATED_NON_LOOPBACK =
   process.env.ALLOW_UNAUTHENTICATED_NON_LOOPBACK === "true";
-const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? "1mb"; // #6: request size limit
+const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE ?? "1mb";
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",")
       .map((s) => s.trim())
       .filter(Boolean)
   : [];
-const SYNC_WAIT_TIMEOUT = parseInt(process.env.SYNC_WAIT_TIMEOUT ?? "300", 10); // seconds
+const SYNC_WAIT_TIMEOUT = parseInt(process.env.SYNC_WAIT_TIMEOUT ?? "300", 10);
 
 if (!VAULT_PATH) {
   console.error("❌  VAULT_PATH env var is required");
@@ -66,8 +57,6 @@ if (
   );
   process.exit(1);
 }
-
-// ─── Startup: wait for vault to be synced ────────────────────────────────────
 
 const startTime = Date.now();
 let vaultReady = false;
@@ -133,24 +122,21 @@ async function waitForVault(): Promise<void> {
   process.exit(1);
 }
 
-// Vault init runs after the HTTP server starts (see bottom of file).
-// This ensures /health responds during the sync wait period.
-
-// ─── Auth Middleware ───────────────────────────────────────────────────────────
-
 function isAuthorizedRequest(req: express.Request): boolean {
-  if (!AUTH_TOKEN) return true; // startup guards against unsafe non-loopback binds
+  if (!AUTH_TOKEN) return true;
   const header = req.headers.authorization ?? "";
   const expected = `Bearer ${AUTH_TOKEN}`;
-  // Use timing-safe comparison to prevent token recovery via response-time analysis
+
   const headerBuf = Buffer.from(header);
   const expectedBuf = Buffer.from(expected);
+
   if (
     headerBuf.length === expectedBuf.length &&
     timingSafeEqual(headerBuf, expectedBuf)
   ) {
     return true;
   }
+
   return false;
 }
 
@@ -163,17 +149,11 @@ function authMiddleware(
   res.status(401).json({ error: "Unauthorized" });
 }
 
-// ─── Audit Logger ─────────────────────────────────────────────────────────────
-// #8: Log all write/delete operations
-
 function auditLog(action: string, path: string, ip?: string) {
   const ts = new Date().toISOString();
   const src = ip ? ` from ${ip}` : "";
   console.log(`[audit] ${ts} ${action}: ${path}${src}`);
 }
-
-// ─── Rate Limiter ─────────────────────────────────────────────────────────────
-// #3: Simple per-IP rate limiting
 
 const rateLimitWindow = 60_000; // 1 minute
 const rateLimitMax = 100; // max requests per window
@@ -202,16 +182,12 @@ function rateLimitMiddleware(
   next();
 }
 
-// Clean up stale rate limit entries periodically
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of requestCounts) {
     if (now > entry.resetAt) requestCounts.delete(ip);
   }
 }, 60_000);
-
-// ─── MCP Server Factory ──────────────────────────────────────────────────────
-// Each SSE connection gets its own McpServer instance (SDK requirement).
 
 function requireVault(): ObsidianVault {
   if (!vaultReady) {
@@ -237,7 +213,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── list_notes ────────────────────────────────────────────────────────────────
   server.tool(
     "list_notes",
     "List all markdown notes in the vault, optionally filtered to a folder",
@@ -258,7 +233,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── read_note ─────────────────────────────────────────────────────────────────
   server.tool(
     "read_note",
     "Read the full content and frontmatter of a note",
@@ -281,8 +255,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── write_note ────────────────────────────────────────────────────────────────
-  // #2: Requires overwrite flag for existing notes
   server.tool(
     "write_note",
     "Create a new note or fully replace an existing one. For modifying parts of an existing note, prefer edit_note (search-and-replace) or append_note instead — they are safer because they only touch the targeted text. Set overwrite: true to replace an existing note (a backup is created automatically).",
@@ -323,7 +295,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── upload_attachment ─────────────────────────────────────────────────────────
   server.tool(
     "upload_attachment",
     "Upload a binary file (image, PDF, etc.) to the vault from base64-encoded data.",
@@ -355,7 +326,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── append_note ───────────────────────────────────────────────────────────────
   server.tool(
     "append_note",
     "Append content to the end of an existing note",
@@ -372,7 +342,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── edit_note ────────────────────────────────────────────────────────────────
   server.tool(
     "edit_note",
     "Search and replace text within a note. To insert new content, include surrounding text in old_text and add the new content in new_text. The old_text must appear exactly once. Backup created automatically.",
@@ -409,8 +378,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── delete_note ───────────────────────────────────────────────────────────────
-  // #1: Soft-delete to .trash/ instead of hard unlink
   server.tool(
     "delete_note",
     "Move a note to .trash/ (soft delete, recoverable). Use permanent: true to hard-delete.",
@@ -442,21 +409,20 @@ function createServer(): McpServer {
     },
   );
 
-  // ── search_vault ──────────────────────────────────────────────────────────────
   server.tool(
     "search_vault",
-    "Search notes by content, tags, or metadata. Results ranked by relevance (filename > frontmatter > headings > body). Use tags/frontmatter filters to narrow results without a text query.",
+    "Full-text search ranked by BM25 with fuzzy matching, prefix matching, and field boosting (title > tags > headings > path > body). Supports Obsidian-style operators inside `query`: `tag:foo` (filter to notes tagged foo, frontmatter or inline #foo), `path:bar` (path contains bar), `file:baz` (filename contains baz), `\"exact phrase\"` (must contain phrase verbatim), `-term` (exclude notes containing term). Operators combine with the structured `tags`/`frontmatter`/`folder` args (all applied additively). Pass an empty `query` with filters set to browse by metadata.",
     {
       query: z
         .string()
         .describe(
-          "Search string (searches content AND file paths). Use empty string with tags/frontmatter filters to browse by metadata.",
+          'Search string. Plain words use fuzzy + prefix BM25 ranking. Operators: tag:foo, path:bar, file:baz, "exact phrase", -exclude. Empty string returns all notes matching the structured filters.',
         ),
       tags: z
         .array(z.string())
         .optional()
         .describe(
-          'Filter to notes with ALL these tags (e.g. ["finance", "budget"])',
+          'Filter to notes with ALL these tags (e.g. ["finance", "budget"]). Applied alongside any tag: operators in the query.',
         ),
       frontmatter: z
         .record(z.string())
@@ -464,14 +430,28 @@ function createServer(): McpServer {
         .describe('Filter by frontmatter fields (e.g. {"status": "draft"})'),
       folder: z.string().optional().describe("Limit search to this folder"),
       caseSensitive: z.boolean().optional().default(false),
+      fuzzy: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("Allow fuzzy matches on free-text terms (typo tolerance)."),
       maxResults: z.number().optional().default(20),
     },
-    async ({ query, tags, frontmatter, folder, caseSensitive, maxResults }) => {
+    async ({
+      query,
+      tags,
+      frontmatter,
+      folder,
+      caseSensitive,
+      fuzzy,
+      maxResults,
+    }) => {
       const results = await requireVault().searchVault(query, {
         folder,
         tags,
         frontmatter,
         caseSensitive,
+        fuzzy,
         maxResults,
       });
       if (results.length === 0) {
@@ -490,15 +470,17 @@ function createServer(): McpServer {
           if (r.matches.length === 0) return header;
           const matchLines = r.matches
             .map((m) => {
-              if (m.context && m.context.length > 0) {
-                return m.context
-                  .map((c) => {
-                    const prefix = c === m.text ? `> L${m.line}:` : `  ...`;
-                    return `  ${prefix} ${c}`;
-                  })
-                  .join("\n");
-              }
-              return `  L${m.line}: ${m.text}`;
+              const sectionLine = m.heading ? `  § ${m.heading}` : null;
+              const body =
+                m.context && m.context.length > 0
+                  ? m.context
+                      .map((c) => {
+                        const prefix = c === m.text ? `> L${m.line}:` : `  ...`;
+                        return `  ${prefix} ${c}`;
+                      })
+                      .join("\n")
+                  : `  L${m.line}: ${m.text}`;
+              return sectionLine ? `${sectionLine}\n${body}` : body;
             })
             .join("\n");
           return `${header}\n${matchLines}`;
@@ -508,7 +490,36 @@ function createServer(): McpServer {
     },
   );
 
-  // ── list_tags ─────────────────────────────────────────────────────────────────
+  server.tool(
+    "find_backlinks",
+    "Find notes that link to a given note via Obsidian wikilinks ([[Note]], [[Note|alias]], [[Note#heading]], [[Note#^block]]). Resolves by basename — `Projects/Foo.md` and a bare `[[Foo]]` from anywhere in the vault both match.",
+    {
+      path: z
+        .string()
+        .describe(
+          'Target note path (e.g. "Projects/Foo.md"). Matched by basename, so the path does not need to exist.',
+        ),
+      maxResults: z.number().optional().default(50),
+    },
+    async ({ path, maxResults }) => {
+      const hits = await requireVault().findBacklinks(path, { maxResults });
+      if (hits.length === 0) {
+        return {
+          content: [{ type: "text", text: `No backlinks to "${path}".` }],
+        };
+      }
+      const formatted = hits
+        .map((h) => {
+          const lines = h.occurrences
+            .map((o) => `  L${o.line}: ${o.text}`)
+            .join("\n");
+          return `**${h.path}** (${h.occurrences.length})\n${lines}`;
+        })
+        .join("\n\n");
+      return { content: [{ type: "text", text: formatted }] };
+    },
+  );
+
   server.tool(
     "list_tags",
     "List all tags used in the vault and which notes use each tag. Useful for discovering what topics exist before searching.",
@@ -529,7 +540,6 @@ function createServer(): McpServer {
     },
   );
 
-  // ── get_sync_status ───────────────────────────────────────────────────────────
   server.tool(
     "get_sync_status",
     "Check Obsidian Sync status — conflicts, recently modified files, and sync log",
@@ -581,8 +591,6 @@ function createServer(): McpServer {
 
   return server;
 }
-
-// ─── HTTP / SSE Express Server ─────────────────────────────────────────────────
 
 const app = express();
 

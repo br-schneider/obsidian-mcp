@@ -4,6 +4,12 @@ import { existsSync, realpathSync } from "fs";
 import matter from "gray-matter";
 import { glob } from "glob";
 import os from "os";
+import {
+  VaultSearchIndex,
+  type SearchHit,
+  type SearchOptions,
+  type BacklinkHit,
+} from "./search.js";
 
 export interface NoteResult {
   path: string;
@@ -12,11 +18,7 @@ export interface NoteResult {
   rawContent: string;
 }
 
-export interface SearchResult {
-  path: string;
-  score: number;
-  matches: Array<{ line: number; text: string; context?: string[] }>;
-}
+export type SearchResult = SearchHit;
 
 export interface WriteResult {
   path: string;
@@ -50,6 +52,7 @@ export interface SyncStatus {
 export class ObsidianVault {
   private vaultPath: string;
   private vaultRealPath: string;
+  private searchIndex: VaultSearchIndex;
 
   constructor(config: { vaultPath: string }) {
     this.vaultPath = path.resolve(config.vaultPath);
@@ -59,11 +62,9 @@ export class ObsidianVault {
     }
 
     this.vaultRealPath = realpathSync(this.vaultPath);
+    this.searchIndex = new VaultSearchIndex(this.vaultPath);
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-  // #5: Path traversal protection with symlink resolution
   private findNearestExistingPath(candidatePath: string): string | undefined {
     let current = candidatePath;
 
@@ -131,7 +132,9 @@ export class ObsidianVault {
       hasProtectedSegment(this.vaultPath, resolvedPath) ||
       hasProtectedSegment(this.vaultRealPath, canonicalBase)
     ) {
-      throw new Error(`Access to protected vault path is blocked: ${originalPath}`);
+      throw new Error(
+        `Access to protected vault path is blocked: ${originalPath}`,
+      );
     }
   }
 
@@ -156,8 +159,6 @@ export class ObsidianVault {
 
     return resolved;
   }
-
-  // ─── Notes ───────────────────────────────────────────────────────────────────
 
   async listNotes(folder?: string): Promise<string[]> {
     const base = folder ? this.resolvePath(folder) : this.vaultPath;
@@ -198,6 +199,7 @@ export class ObsidianVault {
     // Create backup before overwriting
     let backedUp = false;
     let backupPath: string | undefined;
+
     if (exists && options.overwrite) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       backupPath = `${notePath}.${timestamp}.bak`;
@@ -211,6 +213,7 @@ export class ObsidianVault {
       ? matter.stringify(content, frontmatter as Record<string, string>)
       : content;
     await fs.writeFile(fullPath, output, "utf-8");
+    this.searchIndex.invalidateNote(notePath);
     return { path: notePath, created: !exists, backedUp, backupPath };
   }
 
@@ -221,6 +224,7 @@ export class ObsidianVault {
     }
     const separator = content.startsWith("\n") ? "" : "\n";
     await fs.appendFile(fullPath, separator + content, "utf-8");
+    this.searchIndex.invalidateNote(notePath);
   }
 
   async editNote(
@@ -266,6 +270,7 @@ export class ObsidianVault {
 
     const updatedContent = rawContent.replace(oldText, newText);
     await fs.writeFile(fullPath, updatedContent, "utf-8");
+    this.searchIndex.invalidateNote(notePath);
 
     return { path: notePath, backedUp: true, backupPath };
   }
@@ -283,6 +288,7 @@ export class ObsidianVault {
 
     if (options.permanent) {
       await fs.unlink(fullPath);
+      this.searchIndex.invalidateNote(notePath);
       return { path: notePath };
     }
 
@@ -296,6 +302,7 @@ export class ObsidianVault {
     const trashFullPath = path.join(trashDir, trashName);
 
     await fs.rename(fullPath, trashFullPath);
+    this.searchIndex.invalidateNote(notePath);
     const trashRelPath = path.relative(this.vaultPath, trashFullPath);
     return { path: notePath, trashPath: trashRelPath };
   }
@@ -320,8 +327,6 @@ export class ObsidianVault {
     return { path: filePath, bytes: data.length };
   }
 
-  // ─── Search ──────────────────────────────────────────────────────────────────
-
   private extractTags(frontmatter: Record<string, unknown>): string[] {
     if (!frontmatter.tags) return [];
     const raw = Array.isArray(frontmatter.tags)
@@ -334,118 +339,17 @@ export class ObsidianVault {
 
   async searchVault(
     query: string,
-    options: {
-      folder?: string;
-      tags?: string[];
-      frontmatter?: Record<string, string>;
-      caseSensitive?: boolean;
-      maxResults?: number;
-    } = {},
+    options: SearchOptions = {},
   ): Promise<SearchResult[]> {
-    const {
-      folder,
-      tags,
-      frontmatter: fmFilter,
-      caseSensitive = false,
-      maxResults = 20,
-    } = options;
-    const notes = await this.listNotes(folder);
-    const results: SearchResult[] = [];
-    const q = caseSensitive ? query : query.toLowerCase();
-    const normalize = (s: string) => (caseSensitive ? s : s.toLowerCase());
-
-    for (const notePath of notes) {
-      try {
-        const {
-          rawContent,
-          frontmatter: fm,
-          content,
-        } = await this.readNote(notePath);
-
-        // Tag filter: note must have ALL specified tags
-        if (tags && tags.length > 0) {
-          const noteTags = this.extractTags(fm).map((t) => t.toLowerCase());
-          if (!tags.every((t) => noteTags.includes(t.toLowerCase()))) continue;
-        }
-
-        // Frontmatter field filter: note must match ALL specified key-value pairs
-        if (fmFilter) {
-          const skip = Object.entries(fmFilter).some(([key, val]) => {
-            const fmVal = fm[key];
-            if (fmVal == null) return true;
-            return normalize(String(fmVal)) !== normalize(val);
-          });
-          if (skip) continue;
-        }
-
-        // If query is empty, return all notes that pass the filters
-        if (!query) {
-          results.push({ path: notePath, score: 1, matches: [] });
-          if (results.length >= maxResults) break;
-          continue;
-        }
-
-        // Score and collect matches
-        let score = 0;
-        const matches: Array<{
-          line: number;
-          text: string;
-          context?: string[];
-        }> = [];
-        const lines = rawContent.split("\n");
-
-        // Path/filename match
-        if (normalize(notePath).includes(q)) {
-          score += 10;
-        }
-
-        // Frontmatter value match (check raw values, not line-by-line)
-        const fmValues = Object.values(fm).map((v) => normalize(String(v)));
-        if (fmValues.some((v) => v.includes(q))) {
-          score += 5;
-        }
-
-        // Content line matching with context
-        const bodyLines = content.split("\n");
-        let bodyHits = 0;
-        bodyLines.forEach((line, i) => {
-          if (!normalize(line).includes(q)) return;
-
-          const isHeading = line.trimStart().startsWith("#");
-          if (isHeading) {
-            score += 3;
-          } else {
-            bodyHits++;
-          }
-
-          if (matches.length < 10) {
-            const ctx: string[] = [];
-            if (i > 0) ctx.push(bodyLines[i - 1].trim());
-            ctx.push(line.trim());
-            if (i < bodyLines.length - 1) ctx.push(bodyLines[i + 1].trim());
-            matches.push({ line: i + 1, text: line.trim(), context: ctx });
-          }
-        });
-        score += Math.min(bodyHits, 5);
-
-        if (score > 0) {
-          results.push({ path: notePath, score, matches });
-        }
-      } catch (err) {
-        // #9: Log errors instead of swallowing silently
-        console.warn(
-          `[search] Error reading ${notePath}:`,
-          (err as Error).message,
-        );
-      }
-    }
-
-    // Sort by relevance score descending
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, maxResults);
+    return this.searchIndex.search(query, options);
   }
 
-  // ─── Tags ────────────────────────────────────────────────────────────────────
+  async findBacklinks(
+    notePath: string,
+    options: { maxResults?: number } = {},
+  ): Promise<BacklinkHit[]> {
+    return this.searchIndex.findBacklinks(notePath, options);
+  }
 
   async listTags(): Promise<Record<string, string[]>> {
     const notes = await this.listNotes();
@@ -491,8 +395,6 @@ export class ObsidianVault {
     );
   }
 
-  // ─── Sync Status ─────────────────────────────────────────────────────────────
-
   async getSyncStatus(): Promise<SyncStatus> {
     // 1. Find conflict files (Obsidian Sync names them with "(conflict)" suffix)
     const allFiles = await glob("**/*", {
@@ -527,7 +429,9 @@ export class ObsidianVault {
     let syncLogSnippet: string | undefined;
     let syncLogPath: string | undefined;
 
-    const candidateLogs = [path.join(this.vaultPath, ".obsidian", "sync-log.txt")];
+    const candidateLogs = [
+      path.join(this.vaultPath, ".obsidian", "sync-log.txt"),
+    ];
     if (process.env.ALLOW_HOST_OBSIDIAN_LOG_READS === "true") {
       candidateLogs.push(
         path.join(
@@ -557,7 +461,6 @@ export class ObsidianVault {
       }
     }
 
-    // 4. Basic vault stats
     const mdFiles = allFiles.filter((f) => f.endsWith(".md"));
 
     return {

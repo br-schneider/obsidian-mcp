@@ -142,7 +142,7 @@ When an AI agent writes a note via obsidian-mcp:
 
 This is the same sync mechanism Obsidian uses — version history is preserved, conflicts are handled automatically.
 
-## Tools (10)
+## Tools (11)
 
 | Tool | What it does |
 |------|-------------|
@@ -152,7 +152,8 @@ This is the same sync mechanism Obsidian uses — version history is preserved, 
 | `append_note` | Append text to an existing note |
 | `edit_note` | Find and replace a unique text string within a note (auto-backup) |
 | `delete_note` | Soft-delete to .trash/ (or permanent with flag) |
-| `search_vault` | Full-text search across all notes |
+| `search_vault` | BM25-ranked full-text search with fuzzy matching, prefix matching, and Obsidian-style operators (`tag:`, `path:`, `file:`, `"exact"`, `-exclude`) |
+| `find_backlinks` | List notes that link to a given note via `[[wikilinks]]` |
 | `list_tags` | List all tags and which notes use them |
 | `get_daily_note` | Get today's or a specific date's daily note |
 | `create_daily_note` | Create a daily note from a template |
