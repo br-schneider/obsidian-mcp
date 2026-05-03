@@ -329,11 +329,17 @@ export class ObsidianVault {
 
   async setFrontmatter(
     notePath: string,
-    key: string,
-    value: unknown,
+    updates: Record<string, unknown>,
   ): Promise<EditResult> {
+    if (Object.keys(updates).length === 0) {
+      throw new Error(
+        "setFrontmatter requires at least one key in updates.",
+      );
+    }
     return this.mutateFrontmatter(notePath, (fm) => {
-      fm[key] = value;
+      for (const [k, v] of Object.entries(updates)) {
+        fm[k] = v;
+      }
     });
   }
 

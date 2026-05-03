@@ -257,7 +257,7 @@ function createServer(): McpServer {
 
   server.tool(
     "write_note",
-    "Create a new note or fully replace an existing one. For modifying parts of an existing note, prefer edit_note (search-and-replace) or append_note instead — they are safer because they only touch the targeted text. Set overwrite: true to replace an existing note (a backup is created automatically).",
+    "Create a new note or fully replace an existing one. For modifying parts of an existing note, prefer edit_note (search-and-replace), append_note, or set_frontmatter (for property changes) — they are safer because they only touch the targeted text or fields. Set overwrite: true to replace an existing note (a backup is created automatically).",
     {
       path: z.string().describe("Path relative to vault root"),
       content: z.string().describe("Markdown content (excluding frontmatter)"),
@@ -344,7 +344,7 @@ function createServer(): McpServer {
 
   server.tool(
     "edit_note",
-    "Search and replace text within a note. To insert new content, include surrounding text in old_text and add the new content in new_text. The old_text must appear exactly once. Backup created automatically.",
+    "Search and replace text within the body of a note. To insert new content, include surrounding text in old_text and add the new content in new_text. The old_text must appear exactly once. Backup created automatically. For changing frontmatter values, use set_frontmatter instead — it is atomic and cannot match YAML-looking text inside code blocks.",
     {
       path: z
         .string()
@@ -415,33 +415,33 @@ function createServer(): McpServer {
 
   server.tool(
     "set_frontmatter",
-    "Atomically set a single frontmatter field on a note. Preserves all other frontmatter and the body verbatim. Backup created automatically. For multi-key updates, call repeatedly.",
+    'Atomically set one or more frontmatter fields on a note. Preserves all other frontmatter and the body verbatim. Pass `updates` as an object containing every key you want to set in this call (single-key: `{"status": "done"}`; multi-key: `{"status": "done", "completed_at": "2026-05-03", "tags": ["project", "shipped"]}`). Backup created automatically. Always prefer this tool over edit_note for frontmatter changes — it cannot accidentally match YAML-looking text inside code blocks.',
     {
       path: z.string().describe("Path to note relative to vault root"),
-      key: z
-        .string()
-        .describe('Frontmatter field name (e.g. "status", "tags", "due")'),
-      value: z
-        .union([
-          z.string(),
-          z.number(),
-          z.boolean(),
-          z.array(z.unknown()),
-          z.record(z.unknown()),
-          z.null(),
-        ])
+      updates: z
+        .record(
+          z.union([
+            z.string(),
+            z.number(),
+            z.boolean(),
+            z.array(z.unknown()),
+            z.record(z.unknown()),
+            z.null(),
+          ]),
+        )
         .describe(
-          'YAML-compatible value. Strings, numbers, booleans, arrays (e.g. ["draft", "review"]), or objects.',
+          'Object mapping frontmatter field names to YAML-compatible values. Pass every key you want to set in one call.',
         ),
     },
-    async ({ path, key, value }, extra) => {
-      const result = await requireVault().setFrontmatter(path, key, value);
-      auditLog("FRONTMATTER-SET", `${path}#${key}`, extra.sessionId);
+    async ({ path, updates }, extra) => {
+      const result = await requireVault().setFrontmatter(path, updates);
+      const keys = Object.keys(updates).join(",");
+      auditLog("FRONTMATTER-SET", `${path}#{${keys}}`, extra.sessionId);
       return {
         content: [
           {
             type: "text",
-            text: `✅ Set ${key} on ${result.path} (backup: ${result.backupPath})`,
+            text: `✅ Set ${Object.keys(updates).length} field(s) on ${result.path} (backup: ${result.backupPath})`,
           },
         ],
       };
@@ -471,7 +471,7 @@ function createServer(): McpServer {
 
   server.tool(
     "search_vault",
-    "Full-text search ranked by BM25 with fuzzy matching, prefix matching, and field boosting (title > tags > headings > path > body). Supports Obsidian-style operators inside `query`: `tag:foo` (filter to notes tagged foo, frontmatter or inline #foo), `path:bar` (path contains bar), `file:baz` (filename contains baz), `\"exact phrase\"` (must contain phrase verbatim), `-term` (exclude notes containing term). Operators combine with the structured `tags`/`frontmatter`/`folder` args (all applied additively). Pass an empty `query` with filters set to browse by metadata.",
+    'Full-text search ranked by BM25 with fuzzy matching, prefix matching, and field boosting (title > tags > headings > path > body). Fuzzy matching is ON by default and tolerates ~30% edit distance on each term, so `apolo` matches `apollo` (set fuzzy: false for strict matching). Supports Obsidian-style operators inside `query`: `tag:foo` (filter to notes tagged foo, frontmatter or inline #foo), `path:bar` (path contains bar), `file:baz` (filename contains baz), `"exact phrase"` (must contain phrase verbatim, bypasses fuzzy), `-term` (exclude notes containing term). Operators combine with the structured `tags`/`frontmatter`/`folder` args (all applied additively). Pass an empty `query` with filters set to browse by metadata.',
     {
       query: z
         .string()
@@ -494,7 +494,9 @@ function createServer(): McpServer {
         .boolean()
         .optional()
         .default(true)
-        .describe("Allow fuzzy matches on free-text terms (typo tolerance)."),
+        .describe(
+          "Allow fuzzy matches on free-text terms (typo tolerance). Default true — pass false for strict matching when you have an exact term and don't want near-matches.",
+        ),
       maxResults: z.number().optional().default(20),
     },
     async ({
