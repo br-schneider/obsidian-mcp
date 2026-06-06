@@ -26,7 +26,7 @@ AI Agent (MCP client)
 ## Local Setup
 
 ```bash
-git clone https://github.com/meimakes/obsidian-mcp.git
+git clone https://github.com/madebydia/obsidian-mcp.git
 cd obsidian-mcp
 npm install && npm run build
 cp .env.example .env
