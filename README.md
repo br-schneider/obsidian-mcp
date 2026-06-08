@@ -8,7 +8,7 @@ obsidian-mcp reads and writes your vault's markdown files directly on disk. It e
 
 **Two ways to run it:**
 
-1. **Local mode** — on the same machine as your vault. Zero setup beyond `npm start`.
+1. **Local mode** — on the same machine as your vault.
 2. **Cloud mode** — on a VPS or Fly.io, paired with [Obsidian Headless Sync](https://github.com/Belphemur/obsidian-headless-sync-docker). Your vault stays synced via Obsidian Sync, and the server is always on — even when your Mac is asleep.
 
 ```
@@ -28,7 +28,8 @@ AI Agent (MCP client)
 ```bash
 git clone https://github.com/madebydia/obsidian-mcp.git
 cd obsidian-mcp
-npm install && npm run build
+npm ci --ignore-scripts
+npm run build
 cp .env.example .env
 ```
 
@@ -37,6 +38,7 @@ Edit `.env`:
 ```env
 VAULT_PATH=/Users/yourname/Documents/MyVault
 PORT=3456
+BIND_ADDRESS=127.0.0.1
 DAILY_NOTE_FOLDER=Journal
 AUTH_TOKEN=               # set this if exposing beyond localhost
 ```
@@ -50,7 +52,68 @@ curl http://localhost:3456/health
 
 Point your MCP client to `http://localhost:3456/sse`.
 
-For remote access from your local machine, use Tailscale or ngrok — see [SETUP.md](./SETUP.md).
+## Remote Access to Local Mode
+
+If your MCP client runs somewhere other than the machine hosting your vault, expose the local server through a private network or tunnel.
+
+### Tailscale
+
+Tailscale keeps the server private to your tailnet.
+
+```bash
+brew install tailscale
+brew services start tailscale
+sudo tailscale up
+tailscale status
+```
+
+Set `BIND_ADDRESS=0.0.0.0` in `.env`, restart obsidian-mcp, then connect your MCP client to:
+
+```text
+http://<your-mac-hostname>.<tailnet>.ts.net:3456/sse
+```
+
+You can find the stable MagicDNS hostname in the Tailscale admin console.
+
+### ngrok
+
+ngrok is faster to test, but creates a public URL. Set `AUTH_TOKEN` before using it.
+
+```bash
+brew install ngrok
+ngrok http 3456
+```
+
+Connect your MCP client to the generated URL:
+
+```text
+https://<ngrok-id>.ngrok-free.app/sse
+```
+
+If `AUTH_TOKEN` is set, include:
+
+```text
+Authorization: Bearer <your-token>
+```
+
+## Run Persistently on macOS
+
+For a local Mac server, use `pm2` to keep obsidian-mcp running across terminal sessions and restarts.
+
+```bash
+brew install pm2
+pm2 start dist/index.js --name obsidian-mcp --env production
+pm2 save
+pm2 startup
+```
+
+Useful commands:
+
+```bash
+pm2 logs obsidian-mcp
+pm2 status
+pm2 restart obsidian-mcp
+```
 
 ## Cloud Setup
 
@@ -161,6 +224,7 @@ This is the same sync mechanism Obsidian uses — version history is preserved, 
 - **Path traversal protection** — all file operations are sandboxed to the vault directory
 - **Bearer token auth** — set `AUTH_TOKEN` in `.env` (required for cloud deploys)
 - **Obsidian Sync E2E encryption** — supported via `VAULT_PASSWORD`
+- **Install scripts disabled** — `.npmrc` sets `ignore-scripts=true`; use `npm ci --ignore-scripts` for reproducible installs without package lifecycle execution
 
 ## Requirements
 

@@ -4,14 +4,15 @@
 FROM node:22-slim AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
 FROM node:22-slim
 
-# Install obsidian-headless CLI
-RUN npm install -g obsidian-headless && npm cache clean --force
+# Install pinned obsidian-headless CLI. Do not use --ignore-scripts here:
+# transitive native dependencies may need install/build steps.
+RUN npm install -g obsidian-headless@0.0.10 && npm cache clean --force
 
 # Copy built MCP server
 WORKDIR /app
