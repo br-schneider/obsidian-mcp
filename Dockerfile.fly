@@ -6,7 +6,7 @@
 FROM node:20-slim AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
@@ -20,8 +20,9 @@ RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
     tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz && \
     rm /tmp/s6-overlay-*.tar.xz
 
-# Install obsidian-headless CLI
-RUN npm install -g obsidian-headless && npm cache clean --force
+# Install pinned obsidian-headless CLI. Do not use --ignore-scripts here:
+# transitive native dependencies may need install/build steps.
+RUN npm install -g obsidian-headless@0.0.10 && npm cache clean --force
 
 # Copy built MCP server
 WORKDIR /app

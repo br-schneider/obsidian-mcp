@@ -10,18 +10,18 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.10.2",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "glob": "^11.0.0",
-    "gray-matter": "^4.0.3",
-    "zod": "^3.23.8"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "dotenv": "16.6.1",
+    "express": "5.2.1",
+    "glob": "13.0.6",
+    "gray-matter": "4.0.3",
+    "zod": "3.25.76"
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/node": "^20.14.0",
-    "tsx": "^4.15.0",
-    "typescript": "^5.4.5"
+    "@types/express": "5.0.6",
+    "@types/node": "20.19.37",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
   }
 }
